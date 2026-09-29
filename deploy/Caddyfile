@@ -1,0 +1,15 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		# `?` sets a header only when the app did not: the attachment route
+		# sends its own stricter CSP and Content-Disposition (spec 002 §27).
+		?Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	reverse_proxy app:3000
+}

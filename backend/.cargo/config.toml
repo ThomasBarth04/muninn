@@ -1,0 +1,3 @@
+# ts-rs writes the contract types here on `cargo test` (ADR 0007).
+[env]
+TS_RS_EXPORT_DIR = { value = "../frontend/src/api/types", relative = true }

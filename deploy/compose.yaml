@@ -1,0 +1,108 @@
+# Production: one Hetzner Cloud server in the EU (ADR 0008).
+#   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
+name: muninn
+
+x-walg-env: &walg-env
+  WALG_S3_PREFIX: ${WALG_S3_PREFIX}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+  AWS_ENDPOINT: ${AWS_ENDPOINT}
+  AWS_REGION: ${AWS_REGION}
+  AWS_S3_FORCE_PATH_STYLE: ${AWS_S3_FORCE_PATH_STYLE:-true}
+  WALG_COMPRESSION_METHOD: brotli
+
+services:
+  app:
+    build: { context: .., dockerfile: Dockerfile }
+    restart: unless-stopped
+    # Listed, not env_file: the internet-facing process never sees the
+    # superuser password or the backup bucket's keys.
+    environment:
+      RUST_LOG: ${RUST_LOG}
+      APP_URL: ${APP_URL}
+      INBOUND_DOMAIN: ${INBOUND_DOMAIN}
+      MAIL_FROM: ${MAIL_FROM}
+      POSTMARK_SERVER_TOKEN: ${POSTMARK_SERVER_TOKEN}
+      POSTMARK_ACCOUNT_TOKEN: ${POSTMARK_ACCOUNT_TOKEN}
+      POSTMARK_SYSTEM_STREAM: ${POSTMARK_SYSTEM_STREAM}
+      POSTMARK_CUSTOMER_STREAM: ${POSTMARK_CUSTOMER_STREAM}
+      POSTMARK_TRIAL_STREAM: ${POSTMARK_TRIAL_STREAM}
+      POSTMARK_INBOUND_USER: ${POSTMARK_INBOUND_USER}
+      POSTMARK_INBOUND_PASSWORD: ${POSTMARK_INBOUND_PASSWORD}
+      JEV_API_KEY: ${JEV_API_KEY}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_PRICE_ID: ${STRIPE_PRICE_ID}
+      DATABASE_URL: postgres://muninn_app:${MUNINN_APP_PASSWORD}@db:5432/muninn
+      MIGRATE_DATABASE_URL: postgres://muninn_owner:${MUNINN_OWNER_PASSWORD}@db:5432/muninn
+    depends_on:
+      db: { condition: service_healthy }
+
+  db:
+    build: postgres
+    image: muninn-postgres
+    restart: unless-stopped
+    shm_size: 256mb
+    environment:
+      <<: *walg-env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MUNINN_OWNER_PASSWORD: ${MUNINN_OWNER_PASSWORD}
+      MUNINN_APP_PASSWORD: ${MUNINN_APP_PASSWORD}
+    # Every WAL segment goes to object storage; archive_timeout forces a switch
+    # at least once a minute, so a lost disk loses at most about a minute.
+    command: >
+      postgres
+      -c wal_level=replica
+      -c archive_mode=on
+      -c archive_command='wal-g wal-push %p'
+      -c archive_timeout=60
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "muninn"]
+      interval: 5s
+      retries: 20
+
+  # Daily base backup plus retention. WAL is pushed continuously by db itself.
+  walg:
+    image: muninn-postgres
+    restart: unless-stopped
+    user: postgres
+    environment:
+      <<: *walg-env
+      PGDATA: /var/lib/postgresql/data
+      PGHOST: db
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        while true; do
+          if wal-g backup-push "$$PGDATA" && wal-g delete retain FULL 14 --confirm; then
+            sleep 86400
+          else
+            echo "base backup failed, retrying in 10 minutes" >&2
+            sleep 600
+          fi
+        done
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    depends_on:
+      db: { condition: service_healthy }
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

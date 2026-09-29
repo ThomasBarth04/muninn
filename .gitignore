@@ -1,0 +1,15 @@
+# Cross-cutting only. Build output is ignored next to the thing that builds it:
+# backend/.gitignore (Cargo) and frontend/.gitignore (Vite).
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Environment and secrets
+.env
+.env.local
+*.local
+deploy/.env
