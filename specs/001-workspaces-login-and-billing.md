@@ -105,6 +105,13 @@ other agents on the team, and no way to pay once the trial has convinced them.
     transaction; the Postmark domain and the Stripe customer are removed by hand.
     A button comes when requests stop being rare.
 
+**Retention**
+
+28. Magic links, used or not, are deleted a day after they expire; sessions 30
+    days after their last use, when they can no longer log anyone in. Both hold
+    email addresses and nothing reads them after that. A removed agent keeps
+    their row: their replies keep an author (§16).
+
 ## Contract
 
 Base path `/api`. Bodies JSON, times ISO-8601 UTC, ids UUIDs. Errors are

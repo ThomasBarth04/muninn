@@ -54,23 +54,46 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:55432/postgres cargo te
 ## Production
 
 One Hetzner Cloud server in the EU running `deploy/compose.yaml`: the app,
-Postgres with `wal-g`, a `wal-g` backup sidecar and Caddy (ADR 0008).
+Postgres with `wal-g`, a `wal-g` backup sidecar and Caddy (ADR 0008). CI builds
+the app image from `main` and publishes it to
+`ghcr.io/thomasbarth04/muninn` (`:latest` and `:<git sha>`).
 
-1. `cp deploy/.env.example deploy/.env` and fill it in (URL-safe passwords).
-2. DNS: an A record for `DOMAIN` → the server; an MX record for the inbound
-   domain (`in.muninn.io`) → `inbound.postmarkapp.com`.
-3. Postmark: inbound webhook
+1. The server: a Hetzner Cloud Firewall that allows only 22/tcp, 80/tcp,
+   443/tcp and 443/udp; SSH with keys only (`PasswordAuthentication no`);
+   `unattended-upgrades` on; Docker from Docker's apt repository.
+2. `cp deploy/.env.example deploy/.env` and fill it in (URL-safe passwords).
+3. DNS: an A record for `DOMAIN` → the server; an MX record for the inbound
+   domain (`in.muninn.io`) → `inbound.postmarkapp.com`; a DMARC record
+   (`_dmarc`, starting at `v=DMARC1; p=none; rua=mailto:…`) for `muninn.io` and
+   `in.muninn.io`.
+4. Postmark: inbound webhook
    `https://postmark:<POSTMARK_INBOUND_PASSWORD>@<DOMAIN>/hooks/postmark/inbound`
    on the inbound domain; three outbound message streams — system mail
-   (`POSTMARK_SYSTEM_STREAM`), paying customers and trials (ADR 0009) — and the
-   sending domain for `MAIL_FROM` verified.
-4. Stripe: a per-seat monthly price (`STRIPE_PRICE_ID`) and a webhook to
+   (`POSTMARK_SYSTEM_STREAM`), paying customers and trials (ADR 0009). Verify
+   **two** sending domains (DKIM and Return-Path): the one in `MAIL_FROM`, and
+   the inbound domain itself — replies go out as
+   `<slug>+<token>@in.muninn.io` (ADR 0005), and Postmark refuses them until
+   `in.muninn.io` is verified.
+5. Stripe: a per-seat monthly price (`STRIPE_PRICE_ID`) and a webhook to
    `https://<DOMAIN>/hooks/stripe` for `checkout.session.completed`,
    `customer.subscription.updated` and `customer.subscription.deleted`.
-5. `docker compose -f deploy/compose.yaml up -d --build`. The app runs
-   migrations as `muninn_owner` on start and serves as `muninn_app`.
+6. Deploy: `docker login ghcr.io` (a token with `read:packages`, unless the
+   package is public), then
+   `docker compose -f deploy/compose.yaml pull app && docker compose -f deploy/compose.yaml up -d`.
+   The app runs migrations as `muninn_owner` on start and serves as
+   `muninn_app`. On `SIGTERM` it finishes running requests and jobs (up to a
+   minute) before it exits. To roll back, set `MUNINN_TAG` in `deploy/.env` to
+   an earlier commit's sha and run the same two commands.
+7. Monitoring: point an uptime monitor (Better Stack, UptimeRobot, …) at
+   `https://<DOMAIN>/healthz` and alert on anything but `200`. It answers
+   `503` with the reason when the database is unreachable, a job ran out of
+   attempts in the last hour (`SELECT * FROM jobs WHERE failed_at IS NOT NULL`),
+   WAL archiving is failing, or no base backup finished in the last 26 hours.
+   Right after the very first start it is `503` until the first base backup
+   is done, a few minutes. Container logs rotate at 5 × 10 MB per service.
 
 Backups: WAL is archived continuously and a base backup is taken daily, 14
 kept. Restore with [`deploy/restore.sh`](deploy/restore.sh) and run the
-[monthly drill](deploy/RESTORE_DRILL.md). A GDPR deletion request is
+[monthly drill](deploy/RESTORE_DRILL.md) — once before the first customer, too.
+A GDPR deletion request is
 [`deploy/delete-workspace.sql`](deploy/delete-workspace.sql), run by hand.

@@ -6,9 +6,11 @@
 //! Jev or Postmark. A finished job is deleted; one out of attempts keeps its
 //! row with `failed_at` and `last_error` for whoever investigates.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::{Postgres, Transaction};
+use tokio::sync::{Semaphore, watch};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -148,27 +150,62 @@ pub async fn run_due(st: &AppState) -> usize {
 
 /// The loop in the web process. Polls once a second when idle; the sidebar
 /// polls every 2 seconds (spec 003 §8), so LISTEN/NOTIFY would buy nothing.
-pub async fn worker(st: AppState) {
-    let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENCY));
+///
+/// When `stop` turns true it claims nothing more and returns once the jobs
+/// already running have finished: a `send` cut off after Postmark accepted the
+/// reply would run again after its lease and send the reply twice.
+pub async fn worker(st: AppState, mut stop: watch::Receiver<bool>) {
+    let slots = Arc::new(Semaphore::new(CONCURRENCY));
     loop {
-        let permit = slots.clone().acquire_owned().await.expect("semaphore");
-        match claim(&st).await {
+        let permit = tokio::select! {
+            biased;
+            _ = stop.wait_for(|s| *s) => break,
+            p = slots.clone().acquire_owned() => p.expect("semaphore"),
+        };
+        let idle = match claim(&st).await {
             Ok(Some(job)) => {
                 let st = st.clone();
                 tokio::spawn(async move {
                     run(&st, job).await;
                     drop(permit);
                 });
+                continue;
             }
-            Ok(None) => {
-                drop(permit);
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
+            Ok(None) => Duration::from_secs(1),
             Err(e) => {
-                drop(permit);
                 tracing::error!("claiming job: {e}");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                Duration::from_secs(5)
             }
+        };
+        drop(permit);
+        tokio::select! {
+            biased;
+            _ = stop.wait_for(|s| *s) => break,
+            _ = tokio::time::sleep(idle) => {}
         }
     }
+    let _ = slots.acquire_many(CONCURRENCY as u32).await;
+}
+
+/// Hourly: magic links a day after they expire, sessions once they can no
+/// longer log anyone in (spec 001 §28). They hold email addresses, and
+/// nothing reads them after that.
+pub async fn housekeeping(st: AppState) {
+    let mut hourly = tokio::time::interval(Duration::from_secs(3600));
+    loop {
+        hourly.tick().await;
+        if let Err(e) = clean(&st.db).await {
+            tracing::error!("housekeeping: {e}");
+        }
+    }
+}
+
+pub async fn clean(db: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM auth_links WHERE expires_at < now() - interval '1 day'")
+        .execute(db)
+        .await?;
+    sqlx::query("DELETE FROM sessions WHERE last_used_at < now() - interval '30 days'")
+        .execute(db)
+        .await?;
+    Ok(())
 }

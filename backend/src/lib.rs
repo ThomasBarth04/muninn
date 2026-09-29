@@ -14,9 +14,14 @@ pub mod tickets;
 
 use std::sync::Arc;
 
+use axum::extract::State;
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::Response;
+use axum::routing::get;
 use axum::{Router, middleware};
 use sqlx::PgPool;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::trace::TraceLayer;
 
 pub use error::ApiError;
 
@@ -114,8 +119,8 @@ impl AppState {
     }
 }
 
-/// `/api/*` (session, JSON), `/hooks/*` (Postmark, Stripe), and the SPA for
-/// everything else (ADR 0007).
+/// `/api/*` (session, JSON), `/hooks/*` (Postmark, Stripe), `/healthz`, and
+/// the SPA for everything else (ADR 0007).
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
         .merge(auth::routes())
@@ -131,14 +136,78 @@ pub fn router(state: AppState) -> Router {
         .merge(inbound::routes())
         .merge(billing::hooks());
 
-    let spa = ServeDir::new(&state.cfg.static_dir).fallback(ServeFile::new(format!(
-        "{}/index.html",
-        state.cfg.static_dir
-    )));
+    let spa = spa(&state.cfg.static_dir);
 
     Router::new()
         .nest("/api", api)
         .nest("/hooks", hooks)
+        .route("/healthz", get(healthz))
         .fallback_service(spa)
+        // 5xx are logged with method and path. Never the query: `/api/auth/link?token=` is a login.
+        // ponytail: RUST_LOG=tower_http=debug logs every request when you need an access log.
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|req: &axum::extract::Request| {
+                tracing::info_span!("request", method = %req.method(), path = %req.uri().path())
+            }),
+        )
         .with_state(state)
+}
+
+/// The built SPA. Vite names assets by content hash, so they are cached for
+/// good and a missing one is a 404 — not index.html, which the browser would
+/// then keep under that name. index.html is revalidated on every load, so a
+/// deploy is picked up without a hard reload.
+pub fn spa(dir: &str) -> Router {
+    Router::new()
+        .nest_service("/assets", ServeDir::new(format!("{dir}/assets")))
+        .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(format!("{dir}/index.html"))))
+        .layer(middleware::map_response(
+            |uri: axum::http::Uri, mut res: Response| async move {
+                let value = if uri.path().starts_with("/assets/") && res.status().is_success() {
+                    "public, max-age=31536000, immutable"
+                } else {
+                    "no-cache"
+                };
+                res.headers_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_static(value));
+                res
+            },
+        ))
+}
+
+/// For the uptime monitor (ADR 0008): `200 ok`, or `503` naming what is wrong.
+/// Checks the database answers, no job ran out of attempts in the last hour,
+/// WAL archiving is not failing, and — where archiving is on, i.e. production —
+/// a base backup finished in the last 26 hours.
+async fn healthz(State(st): State<AppState>) -> (StatusCode, String) {
+    let checks: Result<(bool, bool, bool), sqlx::Error> = sqlx::query_as(
+        "SELECT
+            EXISTS (SELECT 1 FROM jobs WHERE failed_at > now() - interval '1 hour'),
+            (SELECT coalesce(last_failed_time > last_archived_time, last_failed_time IS NOT NULL)
+             FROM pg_stat_archiver),
+            current_setting('archive_mode') <> 'off'
+              AND coalesce((SELECT max(finished_at) FROM base_backups), '-infinity')
+                  < now() - interval '26 hours'",
+    )
+    .fetch_one(&st.db)
+    .await;
+    let problems: Vec<&str> = match checks {
+        Err(e) => {
+            tracing::error!("healthz: {e}");
+            vec!["database unreachable"]
+        }
+        Ok((jobs, archiving, backup)) => [
+            (jobs, "a job failed in the last hour (see jobs.last_error)"),
+            (archiving, "WAL archiving is failing"),
+            (backup, "no base backup in the last 26 hours"),
+        ]
+        .into_iter()
+        .filter_map(|(bad, what)| bad.then_some(what))
+        .collect(),
+    };
+    if problems.is_empty() {
+        (StatusCode::OK, "ok\n".into())
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, problems.join("\n") + "\n")
+    }
 }

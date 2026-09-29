@@ -6,7 +6,8 @@
 //! Needs `TEST_DATABASE_URL`, a superuser URL, e.g.
 //! `postgres://postgres:postgres@localhost:55432/postgres`
 //! (`docker run -d -p 55432:5432 -e POSTGRES_PASSWORD=postgres postgres:17-alpine`).
-//! Without it every integration test prints a notice and passes.
+//! Without it every integration test prints a notice and passes — except in
+//! CI, where a missing database is a failure, not a pass.
 #![allow(dead_code)]
 
 use std::str::FromStr;
@@ -116,6 +117,10 @@ pub struct TestApp {
 
 pub async fn spawn() -> Option<TestApp> {
     let Ok(admin_url) = std::env::var("TEST_DATABASE_URL") else {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "TEST_DATABASE_URL unset in CI"
+        );
         eprintln!("TEST_DATABASE_URL unset — skipping integration test");
         return None;
     };
