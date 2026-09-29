@@ -221,9 +221,10 @@ async fn suggestions(
                  'id', s.id,
                  'case', json_build_object('ticketId', c.id, 'subject', c.subject, 'closedAt', c.closed_at),
                  'score', s.score,
-                 'solution', (SELECT json_build_object('text', m.text, 'author', json_build_object('name', a.name),
-                                                       'at', m.created_at)
-                              FROM messages m JOIN agents a ON a.id = m.agent_id
+                 'solution', (SELECT json_build_object('text', m.text, 'at', m.created_at,
+                                                       'author', json_build_object('name',
+                                                           coalesce(a.name, nullif(m.from_name, ''), m.from_email)))
+                              FROM messages m LEFT JOIN agents a ON a.id = m.agent_id
                               WHERE m.workspace_id = $1 AND m.ticket_id = c.id AND m.kind = 'agent'
                               ORDER BY m.created_at DESC, m.id DESC LIMIT 1),
                  'myFeedback', (SELECT f.verdict FROM suggestion_feedback f

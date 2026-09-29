@@ -13,12 +13,6 @@ async fn main() {
         .with_writer(std::io::stderr)
         .init();
 
-    // `muninn admin …`: the operator's commands (spec 001 §28), then exit.
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("admin") {
-        std::process::exit(admin(&args[1..]).await);
-    }
-
     // Migrations run as the owner role; the app itself never holds it (ADR 0003).
     if let Ok(url) = std::env::var("MIGRATE_DATABASE_URL") {
         let owner = PgPoolOptions::new()
@@ -28,6 +22,13 @@ async fn main() {
             .expect("owner db");
         sqlx::migrate!().run(&owner).await.expect("migrations");
         owner.close().await;
+    }
+
+    // `muninn admin …`: the operator's commands (spec 001 §28), then exit. After
+    // the migrations, so they also work on a database the server never started on.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("admin") {
+        std::process::exit(admin(&args[1..]).await);
     }
 
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");

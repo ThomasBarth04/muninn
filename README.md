@@ -110,6 +110,21 @@ docker compose -f deploy/compose.yaml exec app muninn admin reset-login frank@ac
 docker compose -f deploy/compose.yaml exec app muninn admin pause acme               # and resume
 ```
 
+Filling a new workspace's brain from the team's old support mailbox (spec 005):
+an mbox export (Google Takeout, Thunderbird, Apple Mail, or `readpst` for
+Outlook), copied into the container, imported, and deleted — it is their
+customers' mail.
+
+```sh
+docker compose -f deploy/compose.yaml cp acme-support.mbox app:/tmp/acme.mbox
+docker compose -f deploy/compose.yaml exec app muninn admin import acme /tmp/acme.mbox --team @acme.com
+docker compose -f deploy/compose.yaml exec -u root app rm /tmp/acme.mbox
+```
+
+It prints what it imported and skipped. Running it again imports nothing twice,
+so a stopped import is resumed by running it again. On a laptop, a 470 MB export
+of 23,000 messages took a minute and a half and 40 MB of memory.
+
 Backups: WAL is archived continuously and a base backup is taken daily, 14
 kept. Restore with [`deploy/restore.sh`](deploy/restore.sh) and run the
 [monthly drill](deploy/RESTORE_DRILL.md) — once before the first customer, too.

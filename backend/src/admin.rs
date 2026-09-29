@@ -1,4 +1,5 @@
-//! `muninn admin …` — the operator's commands on the box (spec 001 §28).
+//! `muninn admin …` — the operator's commands on the box (spec 001 §28,
+//! spec 005).
 //! Every command returns the line to print, or the refusal; nothing is half
 //! done on a refusal.
 
@@ -17,7 +18,8 @@ pub const USAGE: &str = "usage:
   muninn admin reset-login <email>
   muninn admin seats [--month YYYY-MM]
   muninn admin pause <slug>
-  muninn admin resume <slug>";
+  muninn admin resume <slug>
+  muninn admin import <slug> <export.mbox>... --team <address or @domain>...";
 
 /// Addresses every mail system reserves (RFC 2142) — not a workspace's inbox.
 const RESERVED_SLUGS: &[&str] = &[
@@ -74,6 +76,23 @@ pub async fn run(st: &AppState, owner_db: Option<&PgPool>, args: &[String]) -> O
             seats(owner_db, flag("--month")).await
         }
         Some(cmd @ ("pause" | "resume")) => set_paused(st, arg(1)?, cmd == "pause").await,
+        Some("import") => {
+            // Spec 005: positional slug and files, `--team` as often as needed.
+            let (mut team, mut positional) = (vec![], vec![]);
+            let mut rest = args[1..].iter();
+            while let Some(a) = rest.next() {
+                if a == "--team" {
+                    team.push(rest.next().ok_or(USAGE.to_string())?.clone());
+                } else {
+                    positional.push(a.clone());
+                }
+            }
+            let (slug, files) = positional.split_first().ok_or(USAGE.to_string())?;
+            if files.is_empty() {
+                return Err(USAGE.into());
+            }
+            crate::import::run(st, slug, files, &team).await
+        }
         _ => Err(USAGE.into()),
     }
 }

@@ -80,7 +80,8 @@ const MESSAGES: &str = r#"
 SELECT json_build_object(
     'id', m.id,
     'kind', m.kind,
-    'author', CASE WHEN m.kind = 'customer'
+    -- An imported team reply has no agent: its author is the mail's (spec 005 §9).
+    'author', CASE WHEN m.kind = 'customer' OR m.agent_id IS NULL
         THEN json_build_object('name', coalesce(nullif(m.from_name, ''), m.from_email, ''), 'email', coalesce(m.from_email, ''))
         ELSE json_build_object('name', a.name, 'email', a.email) END,
     'text', m.text,
@@ -333,8 +334,6 @@ async fn patch(
     if let Some(status) = req.status {
         // ADR 0010: closing indexes the whole thread into the brain,
         // leaving closed takes it out. The old status is the row's own.
-        // ponytail: text capped at 200k chars — tsvector's limit is 1 MB;
-        // a longer thread is matched on its first 200k.
         sqlx::query(
             "UPDATE tickets t SET
                 status = $3,
@@ -342,12 +341,7 @@ async fn patch(
                 search = CASE
                     WHEN $3 <> 'closed' THEN NULL
                     WHEN t.status = 'closed' THEN t.search
-                    ELSE to_tsvector(
-                        (SELECT w.language FROM workspaces w WHERE w.id = t.workspace_id),
-                        left(t.subject || ' ' || coalesce((
-                            SELECT string_agg(m.text, ' ' ORDER BY m.created_at)
-                            FROM messages m WHERE m.workspace_id = t.workspace_id AND m.ticket_id = t.id), ''),
-                            200000))
+                    ELSE brain_tsvector(t.workspace_id, t.id)
                 END
              WHERE t.workspace_id = $1 AND t.id = $2",
         )

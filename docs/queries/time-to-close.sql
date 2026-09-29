@@ -3,7 +3,8 @@
 -- least one similar case, and whether an agent marked one as helped.
 -- Run as the owner role (it bypasses RLS). For one workspace, add
 --   AND t.workspace_id = '<uuid>'
--- A reopened ticket counts from creation to its latest close.
+-- A reopened ticket counts from creation to its latest close. Imported tickets
+-- (spec 005) were closed before Muninn and are left out.
 
 SELECT CASE WHEN NOT shown THEN 'no suggestions'
             WHEN helped THEN 'suggestions, one helped'
@@ -19,7 +20,7 @@ FROM (
                    JOIN suggestion_feedback f ON f.suggestion_id = s.id
                    WHERE s.ticket_id = t.id AND f.verdict = 'helped')        AS helped
     FROM tickets t
-    WHERE t.status = 'closed' AND t.closed_at IS NOT NULL
+    WHERE t.status = 'closed' AND t.closed_at IS NOT NULL AND t.imported_at IS NULL
       AND t.created_at > now() - interval '90 days'
 ) x
 GROUP BY 1

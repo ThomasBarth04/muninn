@@ -30,7 +30,9 @@ Muninn cannot see them.
 3. Automatic mail is dropped before anything else: `Auto-Submitted` other than
    `no`; `Precedence` `bulk`, `junk`, `list` or `auto_reply`; `X-Autoreply` or
    `X-Autorespond`; delivery reports (`Content-Type: multipart/report`, or from
-   `mailer-daemon@` or `postmaster@`).
+   `mailer-daemon@` or `postmaster@`). So is a message that cannot be read — no
+   sender address, or no valid `Date` — and a second copy of a `Message-ID`
+   already read.
 4. Messages are grouped into threads by `Message-ID`, `In-Reply-To` and
    `References`. A message whose parent is not in the export starts a thread of
    its own. Subjects do not thread: "Re: Invoice" would join strangers.
@@ -63,17 +65,18 @@ Muninn cannot see them.
 10. The thread is indexed into the brain when its ticket is created, exactly as
     closing a ticket indexes it (ADR 0010), and the brain size in the sidebar
     counts it at once.
-11. Importing the same export again adds nothing twice: a thread whose first
-    message's `Message-ID` the workspace already has is skipped. A message
-    without a `Message-ID` gets one made from a hash of its sender, date and
-    text, so it dedupes too.
+11. Nothing is imported twice: a thread any of whose messages the workspace
+    already has — from an earlier import, or because it also arrived by
+    forwarding — is skipped whole. A message without a `Message-ID` gets one
+    made from a hash of its sender, date and text, so it dedupes too.
 12. A customer who later answers an imported thread — their mail's
     `In-Reply-To` names an imported message — reopens that ticket like any other
     (spec 002 §4, §6), and it leaves the brain until it closes again.
-13. Each thread is one transaction: a thread that cannot be read is reported and
-    skipped, and the rest import. The command prints progress, then a summary:
-    messages read, threads, tickets and messages imported, and threads skipped
-    by reason.
+13. Each thread is one transaction. A database error stops the import; running
+    it again picks up where it stopped, because what is in is skipped (§11).
+    The command prints progress, then a summary: messages read, threads,
+    tickets and messages imported, threads skipped by reason, and messages
+    dropped.
 14. An export of several gigabytes works: the file is streamed, not loaded.
 15. The import writes through the tenant helper as `muninn_app`, like inbound
     mail (ADR 0003). It calls no external service.
@@ -92,8 +95,8 @@ Progress goes to stderr; the summary to stdout:
 ```
 acme: read 48210 messages in 17904 threads
 imported 6112 tickets (21877 messages)
-skipped 11792 threads: 9810 no team reply, 1544 started by the team, 31 already imported, 5 unreadable
-dropped 402 automatic messages
+skipped 11792 threads: 9810 no team reply, 1951 started by the team, 31 already in Muninn
+dropped 402 automatic and 5 unreadable messages
 brain: 6140 cases
 ```
 

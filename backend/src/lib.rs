@@ -7,6 +7,7 @@ pub mod copilot;
 pub mod credentials;
 pub mod db;
 pub mod error;
+pub mod import;
 pub mod inbound;
 pub mod jev;
 pub mod jobs;
