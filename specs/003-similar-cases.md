@@ -152,7 +152,7 @@ One `case_<n>` per candidate, up to 50. The response is
 
 - Re-running suggestions, or updating them as the thread grows.
 - Suggestions from other workspaces — every brain is private to its workspace.
-- Importing history to fill a new brain (ADR 0010).
+- Importing history to fill a new brain — spec 005.
 - Editing a case's solution, or picking a better one than the last agent reply.
 - Explaining why Jev matched (it cannot, ADR 0002); reply drafts; links to Jira
   or docs.

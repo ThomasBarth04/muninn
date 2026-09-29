@@ -49,3 +49,12 @@ it can refuse legitimate mail from badly configured senders.
 
 The cap is a counter over outbound messages in the last 24 hours, read on every
 send. Cheap, and correct across restarts because it is in Postgres.
+
+Found before launch, and dormant while signup is closed for the beta (spec 001
+§29): two more ways to make us mail anyone, both on the *system* stream that
+carries every workspace's login links. Invites are uncapped and put the
+workspace's and inviter's own words in the subject, so one signup sends
+unlimited mail. Signup links reach any address — capped per address, not per
+IP — with the chosen workspace name in the subject. Before signup opens: cap
+invites for workspaces without a subscription, cap signup per client IP, and
+send both on the trial stream.

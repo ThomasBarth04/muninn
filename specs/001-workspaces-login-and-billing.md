@@ -10,7 +10,13 @@ other agents on the team, and no way to pay once the trial has convinced them.
 
 ## Behaviour
 
-**Signing up**
+Muninn launches as a private beta (§29–35): an operator creates every workspace
+and invoices it by hand. §1–8 (self-serve signup) and §18–22, §26 (trial and
+Stripe) describe what switches on when signup opens; until then signup answers
+`403 signupClosed` and no Stripe keys are configured. Their code stays and
+stays tested.
+
+**Signing up** — closed during the beta (§29)
 
 1. On `/signup` a visitor enters their email, a workspace name, a slug and a
    language. The slug is pre-filled from the name, is `[a-z0-9-]`, 3–32
@@ -71,7 +77,8 @@ other agents on the team, and no way to pay once the trial has convinced them.
     (sending domain, spec 002; categories, spec 004). Anyone else gets
     `403 ownerOnly`, and the SPA does not show those controls to them.
 
-**Trial and billing**
+**Trial and billing** — during the beta there is no trial and no Stripe;
+workspaces are invoiced by hand (§32–34). §23–25 hold throughout.
 
 18. The trial runs 14 days from workspace creation. A banner shows the days left.
     No card is asked for.
@@ -112,6 +119,42 @@ other agents on the team, and no way to pay once the trial has convinced them.
     email addresses and nothing reads them after that. A removed agent keeps
     their row: their replies keep an author (§16).
 
+**The beta: workspaces created by an operator, invoiced by hand**
+
+29. There is no public signup. `/signup` says Muninn is in private beta and how
+    to ask for a workspace; `POST /api/signup` answers `403 signupClosed`.
+30. An operator creates a workspace from the production box with
+    `muninn admin create-workspace` (Contract): name, slug and language by the
+    rules of §1, and the owner's email. One transaction creates the workspace,
+    its owner and the default categories (spec 004), with billing status
+    `active` — no trial, no trial send cap, replies on the customer stream
+    (ADR 0009) — and prints the inbound address. A taken slug, an email that is
+    already an agent (§15) or an invalid field creates nothing and says why.
+31. The operator tells the owner to log in at `/login` (§9–10); nothing is
+    emailed on creation. While the workspace has received no ticket, the owner's
+    login lands on `/onboarding` (§6: the inbound address and forwarding
+    instructions) instead of `/`. From there the owner invites and removes
+    agents in Settings → Team exactly as in §13–17.
+32. Seats are invoiced monthly, outside Muninn. `muninn admin seats` lists, for
+    a month, every workspace with its seats: each agent who was an agent at any
+    moment of that month counts once — added on the 20th or removed on the 3rd
+    alike. Pending invites are not seats; paused workspaces are listed too, with
+    their seats. Without `--month` it is the current month so far.
+33. Settings → Billing shows the owner "Invoiced monthly per seat" and the
+    current number of seats. There is no Subscribe or Manage billing button.
+34. An operator pauses a workspace that has stopped paying with
+    `muninn admin pause <slug>` and resumes it with `muninn admin resume
+    <slug>`. Paused is billing status `canceled`: the workspace is locked (§24)
+    and keeps receiving mail (§25); owner and agents alike see "This workspace
+    is paused. Contact us to resume it." with the beta contact address instead
+    of the paywall's Subscribe.
+35. The admin commands run inside the app container on the box
+    (`docker compose -f deploy/compose.yaml exec app muninn admin …`) and are
+    not reachable over HTTP. `create-workspace`, `pause` and `resume` write
+    through the tenant helper as `muninn_app`, like the signup they replace;
+    `seats` reads across workspaces and so connects as `muninn_owner` through
+    `MIGRATE_DATABASE_URL` (ADR 0003's operator exception).
+
 ## Contract
 
 Base path `/api`. Bodies JSON, times ISO-8601 UTC, ids UUIDs. Errors are
@@ -138,6 +181,8 @@ Path=/`). Every route except signup, login and the auth link answers
 over 64 characters) · `400 {"error":"invalidSlug"}` · `400
 {"error":"unsupportedLanguage"}` (not in `pg_ts_config`) · `409
 {"error":"slugTaken"}`
+
+During the beta: always `403 {"error":"signupClosed"}`, before any validation.
 
 ### `POST /api/login`
 
@@ -175,7 +220,8 @@ on `signup`.
 { "redirect": "/onboarding" }
 ```
 
-`/onboarding` after signup, `/` otherwise.
+`/onboarding` after signup, and after an owner's login while the workspace has
+no tickets (§31); `/` otherwise.
 
 `410 {"error":"linkExpired"}` · `409 {"error":"slugTaken"}` (signup lost the
 race) · `409 {"error":"emailTaken"}` (invite or signup lost the race)
@@ -282,6 +328,32 @@ Event ids are stored; a repeat is acknowledged and not applied again.
 This route crosses tenants (it finds the workspace by the id Stripe echoes back)
 and is one of ADR 0003's named exceptions.
 
+### `muninn admin` — operator commands (§30–35)
+
+Run on the box: `docker compose -f deploy/compose.yaml exec app muninn admin …`.
+Success prints to stdout and exits `0`; a refusal prints one line to stderr and
+exits `1`, having changed nothing.
+
+```sh
+muninn admin create-workspace --name "Acme" --slug acme --language english --owner frank@acme.com
+# created acme — owner frank@acme.com, inbound acme@in.muninn.io
+
+muninn admin seats --month 2026-10
+# slug   workspace  owner           status  seats
+# acme   Acme       frank@acme.com  active  4
+# globex Globex     ola@globex.no   paused  2
+
+muninn admin pause acme      # paused acme
+muninn admin resume acme     # resumed acme
+```
+
+`seats` output is tab-separated, one workspace per line, sorted by slug, so it
+pastes into a spreadsheet. `--month` defaults to the current month.
+
+Refusals: `invalid slug` · `invalid workspace name` · `unsupported language` ·
+`invalid email` · `slug taken` · `frank@acme.com is already an agent` · `no
+workspace acme` · `invalid month` (not `YYYY-MM`).
+
 ### Cross-tenant surface (ADR 0003)
 
 Reached before the tenant is known, so outside the tenant helper:
@@ -292,6 +364,8 @@ Reached before the tenant is known, so outside the tenant helper:
 - `agent_by_email(email)` — `SECURITY DEFINER`. Login, signup and invites find
   an agent in any workspace.
 - `workspace_id_by_slug(slug)` — `SECURITY DEFINER`. `slugTaken` at signup.
+- `muninn admin seats` — as `muninn_owner`, on the box only (§35). Reads
+  workspace names, owner emails and agent counts; no customer content.
 
 None of them holds customer content.
 
@@ -304,9 +378,15 @@ None of them holds customer content.
 - Changing the slug or language after signup.
 - Deleting a workspace from the product (§27 is by hand); exporting its data.
 - Annual plans, coupons, invoices inside Muninn — Stripe's portal and dashboard
-  cover them.
+  cover them, and during the beta the accounting system does.
+- A web admin. The operator is one person with a shell on the box; a page needs
+  operator login and a cross-tenant HTTP route, and waits until that changes.
+- Emailing the owner when an operator creates their workspace (§31).
 
 ## Open questions
 
-None. The price per seat is a pricing decision, not a behaviour: the product
-reads it from Stripe (§19).
+1. The beta contact address the `/signup` note (§29) and the paused screen (§34)
+   show.
+
+The price per seat is a pricing decision, not a behaviour: the product reads it
+from Stripe (§19), and during the beta it lives on the invoice.
