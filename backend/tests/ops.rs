@@ -101,7 +101,7 @@ async fn housekeeping_deletes_expired_links_and_sessions() {
     ] {
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "INSERT INTO auth_links (token_hash, purpose, email, workspace_id, workspace_name, expires_at)
-             VALUES ('{hash}'::bytea, 'login', 'frank@acme.com', '{ws}', 'Acme', {expires})"
+             VALUES ('{hash}'::bytea, 'setup', 'frank@acme.com', '{ws}', 'Acme', {expires})"
         )))
         .execute(&app.owner)
         .await

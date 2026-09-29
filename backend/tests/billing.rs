@@ -1,4 +1,5 @@
-//! Spec 001 §18–26: Checkout, the Stripe webhook, seat sync.
+//! Spec 001 §23–27: Checkout, the Stripe webhook, seat sync (switched off in
+//! production during the beta, kept working).
 
 mod common;
 
@@ -7,19 +8,18 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
 use sha2::Sha256;
 
-async fn signup(app: &TestApp, email: &str, slug: &str) -> Client {
-    let mut c = app.client();
-    let body =
-        json!({ "email": email, "workspaceName": "Acme", "slug": slug, "language": "english" });
-    assert_eq!(c.post("/api/signup", body).await.status, 202);
-    app.wait_for_email(email).await;
-    let r = c
-        .post(
-            "/api/auth/link",
-            json!({ "token": app.mock.link_token(email) }),
-        )
-        .await;
-    assert_eq!(r.status, 200);
+/// A workspace on a trial, the state Checkout starts from once self-serve
+/// signup returns (the beta creates workspaces active).
+async fn trial_owner(app: &TestApp, email: &str, slug: &str) -> Client {
+    let (c, _) = app.owner(slug, email).await;
+    sqlx::query(
+        "UPDATE workspaces SET billing_status = 'trialing', trial_ends_at = now() + interval '14 days'
+         WHERE slug = $1",
+    )
+    .bind(slug)
+    .execute(&app.owner)
+    .await
+    .unwrap();
     c
 }
 
@@ -66,7 +66,7 @@ async fn checkout_webhook_and_replays() {
         return;
     };
     stripe_mock(&app);
-    let mut frank = signup(&app, "frank@acme.com", "acme").await;
+    let mut frank = trial_owner(&app, "frank@acme.com", "acme").await;
     let ws = frank.get("/api/me").await.body["workspace"]["id"]
         .as_str()
         .unwrap()
@@ -197,19 +197,17 @@ async fn seats_follow_the_team() {
         return;
     };
     stripe_mock(&app);
-    let mut frank = signup(&app, "frank@acme.com", "acme").await;
+    let mut frank = trial_owner(&app, "frank@acme.com", "acme").await;
     let ws = frank.get("/api/me").await.body["workspace"]["id"]
         .as_str()
         .unwrap()
         .to_string();
 
     // Trial: no seat sync.
-    let mut agent = app.client();
     assert_eq!(
         frank.post("/api/billing/portal", json!({})).await.status,
         409
     );
-    assert_eq!(agent.get("/api/me").await.status, 401);
     let completed = json!({
         "id": "evt_1", "type": "checkout.session.completed",
         "data": { "object": { "client_reference_id": ws, "customer": "cus_1", "subscription": "sub_1", "payment_status": "paid" } }
@@ -238,14 +236,7 @@ async fn seats_follow_the_team() {
         vec!["quantity=1&proration_behavior=create_prorations"]
     );
 
-    app.wait_for_email("vetle@acme.com").await;
-    let r = agent
-        .post(
-            "/api/auth/link",
-            json!({ "token": app.mock.link_token("vetle@acme.com") }),
-        )
-        .await;
-    assert_eq!(r.status, 200);
+    let (mut agent, _) = app.set_up_account("vetle@acme.com").await;
     assert_eq!(app.run_jobs().await, 1);
     assert_eq!(
         quantities().last().unwrap(),

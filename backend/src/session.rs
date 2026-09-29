@@ -1,5 +1,5 @@
 //! Who is calling: the session cookie, the 401/402 gate, and the CSRF rule
-//! (ADR 0006).
+//! (ADR 0006, kept by ADR 0011).
 
 use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::request::Parts;
@@ -19,7 +19,7 @@ use crate::{ApiError, AppState};
 
 pub const COOKIE: &str = "muninn_session";
 
-/// 32 random bytes, base64url: magic link tokens and session tokens alike.
+/// 32 random bytes, base64url: link tokens and session tokens alike.
 pub fn new_token() -> String {
     URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
 }
@@ -52,7 +52,7 @@ pub fn cookie_token(parts: &Parts) -> Option<&str> {
 
 /// The logged-in agent. Taking this as an argument is what makes a route
 /// answer `401 unauthenticated`, and on a locked workspace
-/// `402 paymentRequired` — except the routes spec 001 §24 leaves open.
+/// `402 paymentRequired` — except the routes spec 001 §21 leaves open.
 #[derive(Clone, Debug)]
 pub struct Auth {
     pub agent_id: Uuid,

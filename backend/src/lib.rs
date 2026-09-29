@@ -1,8 +1,10 @@
+pub mod admin;
 pub mod api;
 pub mod auth;
 pub mod billing;
 pub mod categories;
 pub mod copilot;
+pub mod credentials;
 pub mod db;
 pub mod error;
 pub mod inbound;
@@ -25,6 +27,20 @@ use tower_http::trace::TraceLayer;
 
 pub use error::ApiError;
 
+/// Every byte but RFC 3986's unreserved characters as `%XX`: for header
+/// parameters (RFC 5987) and URI components.
+pub fn percent_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
 /// Everything comes from the environment (ADR 0008: `deploy/.env`).
 /// A missing external credential turns that integration off instead of
 /// failing startup, so the app runs locally with nothing but a database.
@@ -34,7 +50,7 @@ pub struct Config {
     pub app_url: String,
     /// `in.muninn.io` — workspaces receive at `<slug>@<inbound_domain>`.
     pub inbound_domain: String,
-    /// From header for magic links: `Muninn <login@muninn.io>`.
+    /// From header of setup, reset and invite links: `Muninn <login@muninn.io>`.
     pub mail_from: String,
     pub static_dir: String,
 
@@ -59,7 +75,7 @@ pub struct Config {
     pub stripe_api_url: String,
     pub stripe_secret_key: Option<String>,
     pub stripe_webhook_secret: Option<String>,
-    /// The per-seat monthly price (spec 001 open question 1: config, not code).
+    /// The per-seat monthly price (spec 001 §23: configuration, not code).
     pub stripe_price_id: Option<String>,
 }
 

@@ -66,6 +66,9 @@ export const PRIORITY_LABELS: Record<NonNullable<Ticket['priority']>, string> = 
   urgent: 'Urgent',
 }
 
+// Shown where the beta sends people to us (spec 001 open question 1).
+export const BETA_CONTACT = 'hello@muninn.io'
+
 export const pct = (p: number) => `${Math.round(p * 100)}%`
 
 export const formatDate = (iso: string) =>

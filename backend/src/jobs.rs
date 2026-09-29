@@ -187,8 +187,8 @@ pub async fn worker(st: AppState, mut stop: watch::Receiver<bool>) {
     let _ = slots.acquire_many(CONCURRENCY as u32).await;
 }
 
-/// Hourly: magic links a day after they expire, sessions once they can no
-/// longer log anyone in (spec 001 §28). They hold email addresses, and
+/// Hourly: setup and reset links a day after they expire, sessions once they can no
+/// longer log anyone in (spec 001 §30). They hold email addresses, and
 /// nothing reads them after that.
 pub async fn housekeeping(st: AppState) {
     let mut hourly = tokio::time::interval(Duration::from_secs(3600));

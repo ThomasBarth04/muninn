@@ -11,7 +11,6 @@ import type { NewCategory } from './api/types/NewCategory'
 import type { PatchCategory } from './api/types/PatchCategory'
 import type { Me } from './api/types/Me'
 import type { SendingDomain } from './api/types/SendingDomain'
-import type { UrlResponse } from './api/types/UrlResponse'
 
 const SECTIONS = [
   { section: 'profile', label: 'Profile' },
@@ -81,7 +80,62 @@ function Profile({ me }: { me: Me }) {
       <div className="address">
         <code>{me.workspace.inboundAddress}</code> <CopyButton text={me.workspace.inboundAddress} />
       </div>
+      <ChangePassword />
     </section>
+  )
+}
+
+// Spec 001 §11: this session stays, the others end.
+function ChangePassword() {
+  const [form, setForm] = useState({ currentPassword: '', newPassword: '' })
+  const change = useMutation({
+    mutationFn: () => api.post('/me/password', form),
+    onSuccess: () => setForm({ currentPassword: '', newPassword: '' }),
+  })
+  const error = { wrongPassword: 'Your current password is not right.', invalidPassword: 'Choose a password of 10 to 256 characters.' }[
+    errorCode(change.error) ?? ''
+  ]
+  return (
+    <form
+      className="stack"
+      onSubmit={(e) => {
+        e.preventDefault()
+        change.mutate()
+      }}
+    >
+      <h3>Password</h3>
+      <label>
+        Current password
+        <input
+          type="password"
+          required
+          autoComplete="current-password"
+          value={form.currentPassword}
+          onChange={(e) => setForm((f) => ({ ...f, currentPassword: e.target.value }))}
+        />
+      </label>
+      <label>
+        New password
+        <input
+          type="password"
+          required
+          minLength={10}
+          maxLength={256}
+          autoComplete="new-password"
+          value={form.newPassword}
+          onChange={(e) => setForm((f) => ({ ...f, newPassword: e.target.value }))}
+        />
+        <span className="hint">At least 10 characters. You stay logged in here; other devices are logged out.</span>
+      </label>
+      <div>
+        <button className="primary" disabled={change.isPending}>
+          Change password
+        </button>{' '}
+        {change.isSuccess && <span className="muted">Changed.</span>}
+        {error && <span className="error">{error}</span>}
+        {change.isError && !error && <span className="error">Could not change the password.</span>}
+      </div>
+    </form>
   )
 }
 
@@ -90,6 +144,7 @@ function Team({ isOwner }: { isOwner: boolean }) {
   const agents = useAgents()
   const [email, setEmail] = useState('')
   const [removing, setRemoving] = useState<string | null>(null)
+  const [resetting, setResetting] = useState<string | null>(null)
   const invite = useMutation({
     mutationFn: () => api.post('/invites', { email }),
     onSuccess: () => {
@@ -103,6 +158,11 @@ function Team({ isOwner }: { isOwner: boolean }) {
       setRemoving(null)
       qc.invalidateQueries({ queryKey: ['agents'] })
     },
+  })
+  // Spec 001 §10: a lost authenticator. Both factors cleared, a new setup link.
+  const reset = useMutation({
+    mutationFn: (id: string) => api.post(`/agents/${id}/reset-login`),
+    onSettled: () => setResetting(null),
   })
   const inviteError = { invalidEmail: 'Enter a valid email address.', emailTaken: 'That address is already an agent in a Muninn workspace.' }[
     errorCode(invite.error) ?? ''
@@ -121,7 +181,15 @@ function Team({ isOwner }: { isOwner: boolean }) {
               <td className="right">
                 {isOwner &&
                   a.role !== 'owner' &&
-                  (removing === a.id ? (
+                  (resetting === a.id ? (
+                    <>
+                      Log {a.name} out and email a new setup link?{' '}
+                      <button className="danger" disabled={reset.isPending} onClick={() => reset.mutate(a.id)}>
+                        Reset login
+                      </button>{' '}
+                      <button onClick={() => setResetting(null)}>Cancel</button>
+                    </>
+                  ) : removing === a.id ? (
                     <>
                       Remove {a.name}?{' '}
                       <button className="danger" disabled={remove.isPending} onClick={() => remove.mutate(a.id)}>
@@ -130,7 +198,10 @@ function Team({ isOwner }: { isOwner: boolean }) {
                       <button onClick={() => setRemoving(null)}>Cancel</button>
                     </>
                   ) : (
-                    <button onClick={() => setRemoving(a.id)}>Remove</button>
+                    <>
+                      <button onClick={() => setResetting(a.id)}>Reset login</button>{' '}
+                      <button onClick={() => setRemoving(a.id)}>Remove</button>
+                    </>
                   ))}
               </td>
             </tr>
@@ -162,6 +233,8 @@ function Team({ isOwner }: { isOwner: boolean }) {
             Send invite
           </button>
           {inviteError && <span className="error">{inviteError}</span>}
+          {reset.isSuccess && <span className="muted">Login reset. A new setup link is on its way.</span>}
+          {reset.isError && <span className="error">Could not reset the login.</span>}
           {invite.isError && !inviteError && <span className="error">Could not send the invite.</span>}
         </form>
       )}
@@ -169,49 +242,24 @@ function Team({ isOwner }: { isOwner: boolean }) {
   )
 }
 
-const BILLING_LABELS = {
-  trialing: 'Free trial',
-  trialExpired: 'Trial ended',
-  active: 'Active',
-  pastDue: 'Payment failed — Stripe is retrying',
-  canceled: 'Canceled',
-}
-
+// Spec 001 §18–19: during the beta seats are invoiced by hand, not through Stripe.
 function BillingSection({ isOwner }: { isOwner: boolean }) {
-  // After Stripe Checkout the webhook, not the browser, activates the
-  // workspace (spec 001 §20) — keep re-reading until it lands.
-  const me = useMe(5000)
-  const go = (path: string) => api.post<UrlResponse>(path).then(({ url }) => (location.href = url))
-  const checkout = useMutation({ mutationFn: () => go('/billing/checkout') })
-  const portal = useMutation({ mutationFn: () => go('/billing/portal') })
-  if (!me.data) return null
-  const b = me.data.workspace.billing
-  const subscribed = b.status === 'active' || b.status === 'pastDue'
-
+  const agents = useAgents()
   return (
     <section className="card">
       <h1>Billing</h1>
-      <p>
-        Status: <strong>{BILLING_LABELS[b.status]}</strong>
-        {b.status === 'trialing' && <> · ends {formatDate(b.trialEndsAt)}</>}
-      </p>
-      <p className="muted">Priced per agent per month. Pending invites are not seats.</p>
       {isOwner ? (
-        <div className="row-buttons">
-          {!subscribed && (
-            <button className="primary" disabled={checkout.isPending} onClick={() => checkout.mutate()}>
-              Subscribe
-            </button>
+        <>
+          <p>Invoiced monthly per seat.</p>
+          {agents.data && (
+            <p>
+              <strong>{agents.data.agents.length}</strong> {agents.data.agents.length === 1 ? 'seat' : 'seats'} now. Pending
+              invites are not seats.
+            </p>
           )}
-          {(subscribed || b.status === 'canceled') && (
-            <button disabled={portal.isPending} onClick={() => portal.mutate()}>
-              Manage billing
-            </button>
-          )}
-          {(checkout.isError || portal.isError) && <span className="error">Could not reach Stripe. Try again.</span>}
-        </div>
+        </>
       ) : (
-        <p className="muted">Only the workspace owner manages billing.</p>
+        <p className="muted">Only the workspace owner sees billing.</p>
       )}
     </section>
   )

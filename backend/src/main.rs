@@ -9,7 +9,15 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "muninn=info,tower_http=info".into()),
         )
+        // stdout is `muninn admin`'s answer (seats pastes into a spreadsheet).
+        .with_writer(std::io::stderr)
         .init();
+
+    // `muninn admin …`: the operator's commands (spec 001 §28), then exit.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("admin") {
+        std::process::exit(admin(&args[1..]).await);
+    }
 
     // Migrations run as the owner role; the app itself never holds it (ADR 0003).
     if let Ok(url) = std::env::var("MIGRATE_DATABASE_URL") {
@@ -51,6 +59,32 @@ async fn main() {
     worker.await.expect("job worker");
     state.db.close().await;
     tracing::info!("stopped");
+}
+
+async fn admin(args: &[String]) -> i32 {
+    let connect = |url: String| async move {
+        PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("db")
+    };
+    let db = connect(std::env::var("DATABASE_URL").expect("DATABASE_URL")).await;
+    let owner_db = match std::env::var("MIGRATE_DATABASE_URL") {
+        Ok(url) => Some(connect(url).await),
+        Err(_) => None,
+    };
+    let state = AppState::new(db, Config::from_env());
+    match muninn::admin::run(&state, owner_db.as_ref(), args).await {
+        Ok(out) => {
+            println!("{out}");
+            0
+        }
+        Err(refusal) => {
+            eprintln!("{refusal}");
+            1
+        }
+    }
 }
 
 /// `docker compose` sends SIGTERM and kills after `stop_grace_period`. As PID 1

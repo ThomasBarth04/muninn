@@ -238,6 +238,60 @@ impl TestApp {
     }
 }
 
+/// An authenticator app: the code for `secret` (base32, as the setup page
+/// shows it), `steps` 30-second steps from now. A code works once, so a
+/// second login in the same half-minute uses `steps = 1`.
+pub fn code(secret: &str, steps: i64) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let (mut bits, mut n, mut bytes) = (0u32, 0u32, vec![]);
+    for c in secret.bytes() {
+        n = n << 5 | ALPHABET.iter().position(|&a| a == c).expect("base32") as u32;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((n >> bits) as u8);
+        }
+    }
+    let step = chrono::Utc::now().timestamp() / 30 + steps;
+    format!("{:06}", muninn::credentials::code_at(&bytes, step))
+}
+
+pub const PASSWORD: &str = "correct horse battery";
+
+impl TestApp {
+    /// Follow the newest link emailed to `email` and set a password and an
+    /// authenticator: a logged-in browser and the authenticator's secret.
+    pub async fn set_up_account(&self, email: &str) -> (Client, String) {
+        self.wait_for_email(email).await;
+        let token = self.mock.link_token(email);
+        let mut c = self.client();
+        let info = c.get(&format!("/api/auth/link?token={token}")).await;
+        assert_eq!(info.status, 200, "{:?}", info.body);
+        let secret = info.body["totp"]["secret"]
+            .as_str()
+            .expect("an authenticator to set up")
+            .to_string();
+        let r = c
+            .post(
+                "/api/auth/link",
+                json!({ "token": token, "password": PASSWORD, "code": code(&secret, 0) }),
+            )
+            .await;
+        assert_eq!(r.status, 200, "{:?}", r.body);
+        (c, secret)
+    }
+
+    /// A workspace created the way the operator does (spec 001 §1–2), its
+    /// owner logged in.
+    pub async fn owner(&self, slug: &str, email: &str) -> (Client, String) {
+        let name = format!("{}{}", slug[..1].to_uppercase(), &slug[1..]);
+        muninn::admin::create_workspace(&self.st, &name, slug, "english", email)
+            .await
+            .expect("workspace created");
+        self.set_up_account(email).await
+    }
+}
+
 /// A browser: JSON in and out, with the session cookie carried by hand
 /// (the cookie is `Secure`, which a cookie jar would refuse over http).
 pub struct Client {

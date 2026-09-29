@@ -1,11 +1,11 @@
 -- Erase one workspace and everything in it: a GDPR deletion request
--- (spec 001, open question 2 — a documented, tested script run by hand).
+-- (spec 001 §29 — a documented, tested script run by hand).
 --
 -- Run as muninn_owner (bypasses RLS, owns the tables):
 --   docker compose -f deploy/compose.yaml exec -T db \
 --     psql -U muninn_owner -d muninn -v slug=acme -f - < deploy/delete-workspace.sql
 --
--- One transaction. Every tenant table, sessions, magic links and jobs cascade
+-- One transaction. Every tenant table, sessions, setup links and jobs cascade
 -- from workspaces; the other foreign keys (ticket owner, contact, category,
 -- message author) point inside the same workspace and go in the same statement.
 --

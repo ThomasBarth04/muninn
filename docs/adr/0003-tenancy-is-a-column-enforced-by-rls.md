@@ -50,7 +50,7 @@ workspace by inbound address — cannot use the tenant helper. Those lookups go
 through a small set of `SECURITY DEFINER` functions or tables without RLS
 (`jobs`, `workspaces` lookup by slug), each named in the spec that needs it.
 That list is the audit surface and stays short. The operator's commands on the
-box (`muninn admin`, spec 001 §35) are the one other crossing: they connect as
+box (`muninn admin`, spec 001 §28) are the one other crossing: they connect as
 the owner role, and only from a shell on the server.
 
 `SET LOCAL` only lives inside a transaction, so every tenant read is a

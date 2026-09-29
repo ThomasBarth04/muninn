@@ -23,45 +23,66 @@ pub struct ErrorBody {
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
 #[ts(export)]
-pub struct SignupRequest {
+pub struct LoginRequest {
     pub email: String,
-    pub workspace_name: String,
-    pub slug: String,
-    pub language: String,
+    pub password: String,
+    /// The six digits the authenticator app shows.
+    pub code: String,
+}
+
+/// `POST /api/login` and `POST /api/auth/link`: where the SPA goes next.
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct LoginResponse {
+    pub redirect: String,
 }
 
 #[derive(Deserialize, TS)]
 #[ts(export)]
-pub struct LoginRequest {
+pub struct PasswordResetRequest {
     pub email: String,
 }
 
-/// `GET /api/auth/link` — what the `/auth` page shows before the button.
+/// `GET /api/auth/link` — what the `/auth` page shows before it is submitted.
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct AuthLinkInfo {
-    #[ts(type = "'signup' | 'login' | 'invite'")]
+    #[ts(type = "'invite' | 'setup' | 'reset'")]
     pub purpose: String,
     pub workspace_name: String,
     pub email: String,
-    /// Signup only, so "slug taken" can send the visitor back with the form filled.
-    pub slug: Option<String>,
-    pub language: Option<String>,
+    /// The authenticator to set up; null on `reset`, which uses the existing one.
+    pub totp: Option<Totp>,
+}
+
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Totp {
+    /// Base32, for typing into the app by hand.
+    pub secret: String,
+    /// `otpauth://totp/…`, what the QR code encodes.
+    pub uri: String,
+    /// An SVG image of `uri`.
+    pub qr_svg: String,
 }
 
 #[derive(Deserialize, TS)]
 #[ts(export)]
-pub struct ConsumeLinkRequest {
+pub struct UseLinkRequest {
     pub token: String,
+    pub password: String,
+    pub code: String,
 }
 
-#[derive(Serialize, TS)]
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 #[ts(export)]
-pub struct ConsumeLinkResponse {
-    pub redirect: String,
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone)]

@@ -4,15 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+argon2 = "0.6.0"
 axum = { version = "0.8", features = ["macros"] }
 base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 hex = "0.4.3"
 hmac = "0.13.0"
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "form"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha1 = "0.11.0"
 sha2 = "0.11.0"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate", "macros", "json"] }
 tokio = { version = "1.53.1", features = ["full"] }
@@ -21,3 +24,9 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 ts-rs = { version = "12.0.1", features = ["uuid-impl", "chrono-impl", "serde-json-impl", "no-serde-warnings"] }
 uuid = { version = "1.26.1", features = ["v4", "serde"] }
+
+# Argon2 is slow unoptimised; tests hash on every login.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
