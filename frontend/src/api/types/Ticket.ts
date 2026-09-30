@@ -2,7 +2,12 @@
 import type { AgentRef } from "./AgentRef";
 import type { CategorySuggestion } from "./CategorySuggestion";
 import type { Contact } from "./Contact";
+import type { HubspotLink } from "./HubspotLink";
 import type { LastMessage } from "./LastMessage";
 import type { TicketCategory } from "./TicketCategory";
 
-export type Ticket = { id: string, subject: string, status: 'new' | 'waitingOnContact' | 'waitingOnUs' | 'closed', priority: 'low' | 'medium' | 'high' | 'urgent' | null, owner: AgentRef | null, contact: Contact, category: TicketCategory | null, categorySuggestions: Array<CategorySuggestion>, seenBefore: boolean, lastMessage: LastMessage, createdAt: string, lastActivityAt: string, };
+export type Ticket = { id: string, subject: string, status: 'new' | 'waitingOnContact' | 'waitingOnUs' | 'closed', priority: 'low' | 'medium' | 'high' | 'urgent' | null, owner: AgentRef | null, contact: Contact, category: TicketCategory | null, categorySuggestions: Array<CategorySuggestion>, seenBefore: boolean, lastMessage: LastMessage, createdAt: string, lastActivityAt: string, 
+/**
+ * Null for a ticket that did not come from HubSpot (spec 007).
+ */
+hubspot: HubspotLink | null, };

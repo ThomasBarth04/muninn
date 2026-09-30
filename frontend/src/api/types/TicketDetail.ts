@@ -3,6 +3,7 @@ import type { AgentRef } from "./AgentRef";
 import type { CategorySuggestion } from "./CategorySuggestion";
 import type { Contact } from "./Contact";
 import type { ContactTicket } from "./ContactTicket";
+import type { HubspotLink } from "./HubspotLink";
 import type { LastMessage } from "./LastMessage";
 import type { Message } from "./Message";
 import type { TicketCategory } from "./TicketCategory";
@@ -10,4 +11,8 @@ import type { TicketCategory } from "./TicketCategory";
 /**
  * `GET /api/tickets/{id}` — the Ticket plus its thread.
  */
-export type TicketDetail = { messages: Array<Message>, contactTickets: Array<ContactTicket>, id: string, subject: string, status: 'new' | 'waitingOnContact' | 'waitingOnUs' | 'closed', priority: 'low' | 'medium' | 'high' | 'urgent' | null, owner: AgentRef | null, contact: Contact, category: TicketCategory | null, categorySuggestions: Array<CategorySuggestion>, seenBefore: boolean, lastMessage: LastMessage, createdAt: string, lastActivityAt: string, };
+export type TicketDetail = { messages: Array<Message>, contactTickets: Array<ContactTicket>, id: string, subject: string, status: 'new' | 'waitingOnContact' | 'waitingOnUs' | 'closed', priority: 'low' | 'medium' | 'high' | 'urgent' | null, owner: AgentRef | null, contact: Contact, category: TicketCategory | null, categorySuggestions: Array<CategorySuggestion>, seenBefore: boolean, lastMessage: LastMessage, createdAt: string, lastActivityAt: string, 
+/**
+ * Null for a ticket that did not come from HubSpot (spec 007).
+ */
+hubspot: HubspotLink | null, };

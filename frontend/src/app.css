@@ -59,6 +59,8 @@ button.link:hover { text-decoration: underline; background: none; }
 button[aria-pressed='true'] { background: #e5f5f8; border-color: var(--link); color: var(--link); }
 label { display: block; font-weight: 600; font-size: 13px; }
 label > input, label > select, label > textarea, label > .input-suffix { margin-top: 4px; font-weight: normal; }
+label.check { font-weight: normal; }
+label.check > input { width: auto; margin: 0 6px 0 0; }
 .input-suffix { display: flex; align-items: center; gap: 6px; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .inline { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-top: 8px; }

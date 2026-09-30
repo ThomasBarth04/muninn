@@ -77,6 +77,49 @@ async fn a_forgotten_filter_returns_nothing_foreign() {
         .await
         .unwrap();
     assert_eq!(by_slug, Some(a));
+
+    // Spec 007: a HubSpot connection is the tenant's own, and the webhook's
+    // lookup by account answers only which workspace.
+    sqlx::query(
+        "INSERT INTO hubspot_connections (workspace_id, portal_id, account_name, refresh_token)
+         VALUES ($1, 42, 'acme.com', 'rt')",
+    )
+    .bind(a)
+    .execute(&app.owner)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO agents (workspace_id, email, name, role) VALUES ($1, 'frank@acme.com', 'frank', 'owner')",
+    )
+    .bind(a)
+    .execute(&app.owner)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO hubspot_states (workspace_id, token_hash, agent_id, expires_at)
+         SELECT $1, 'x', id, now() FROM agents WHERE workspace_id = $1",
+    )
+    .bind(a)
+    .execute(&app.owner)
+    .await
+    .unwrap();
+    let mut tx = tenant_tx(&app.st.db, b).await.unwrap();
+    let tokens: Vec<String> = sqlx::query_scalar("SELECT refresh_token FROM hubspot_connections")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(tokens.is_empty());
+    let states: i64 = sqlx::query_scalar("SELECT count(*) FROM hubspot_states")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(states, 0);
+    tx.rollback().await.unwrap();
+    let by_portal: Option<Uuid> = sqlx::query_scalar("SELECT workspace_id_by_hubspot_portal(42)")
+        .fetch_one(&app.st.db)
+        .await
+        .unwrap();
+    assert_eq!(by_portal, Some(a));
 }
 
 #[tokio::test]

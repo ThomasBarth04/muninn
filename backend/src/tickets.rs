@@ -56,7 +56,8 @@ SELECT json_build_object(
                     FROM messages m WHERE m.workspace_id = t.workspace_id AND m.ticket_id = t.id
                     ORDER BY m.created_at DESC, m.id DESC LIMIT 1),
     'createdAt', t.created_at,
-    'lastActivityAt', t.last_activity_at)
+    'lastActivityAt', t.last_activity_at,
+    'hubspot', CASE WHEN t.hubspot_id IS NOT NULL THEN json_build_object('url', t.hubspot_url) END)
 FROM tickets t
 JOIN contacts c ON c.id = t.contact_id
 LEFT JOIN agents o ON o.id = t.owner_id
@@ -267,15 +268,11 @@ async fn patch(
         return Err(ApiError::bad_request("invalidPriority"));
     }
     let mut tx = tenant_tx(&st.db, ws).await?;
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM tickets WHERE workspace_id = $1 AND id = $2)",
-    )
-    .bind(ws)
-    .bind(id)
-    .fetch_one(&mut *tx)
-    .await?;
-    if !exists {
-        return Err(ApiError::not_found());
+    // Spec 007 §25–26: HubSpot owns these; the category is Muninn's own.
+    if from_hubspot(&mut tx, ws, id).await?
+        && (req.status.is_some() || req.owner_id.is_some() || req.priority.is_some())
+    {
+        return Err(synced_from_hubspot());
     }
     if let Some(Some(owner)) = req.owner_id {
         let ok: bool = sqlx::query_scalar(
@@ -390,6 +387,23 @@ async fn delivery_for_send(
     })
 }
 
+/// Whether the ticket came from HubSpot (spec 007); `404` if there is none.
+async fn from_hubspot(tx: &mut Tx, ws: Uuid, id: Uuid) -> ApiResult<bool> {
+    sqlx::query_scalar(
+        "SELECT hubspot_id IS NOT NULL FROM tickets WHERE workspace_id = $1 AND id = $2",
+    )
+    .bind(ws)
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(ApiError::not_found)
+}
+
+/// Spec 007 §25: a HubSpot ticket is answered in HubSpot.
+fn synced_from_hubspot() -> ApiError {
+    ApiError::conflict("syncedFromHubSpot")
+}
+
 fn nonempty(text: &str) -> ApiResult<&str> {
     let text = text.trim();
     if text.is_empty() {
@@ -410,6 +424,9 @@ async fn reply(
     let text = nonempty(&req.text)?;
     let ws = auth.workspace_id;
     let mut tx = tenant_tx(&st.db, ws).await?;
+    if from_hubspot(&mut tx, ws, id).await? {
+        return Err(synced_from_hubspot());
+    }
     let found = sqlx::query(
         "UPDATE tickets SET status = 'waitingOnContact', last_activity_at = now(),
                 owner_id = coalesce(owner_id, $3)
@@ -493,6 +510,9 @@ async fn comment(
     let text = nonempty(&req.text)?;
     let ws = auth.workspace_id;
     let mut tx = tenant_tx(&st.db, ws).await?;
+    if from_hubspot(&mut tx, ws, id).await? {
+        return Err(synced_from_hubspot());
+    }
     let found = sqlx::query(
         "UPDATE tickets SET last_activity_at = now() WHERE workspace_id = $1 AND id = $2",
     )

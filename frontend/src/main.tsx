@@ -131,7 +131,13 @@ const settingsIndexRoute = createRoute({
     throw redirect({ to: '/settings/$section', params: { section: 'profile' } })
   },
 })
-const settingsRoute = createRoute({ getParentRoute: () => appRoute, path: '/settings/$section', component: Settings })
+const settingsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/settings/$section',
+  component: Settings,
+  // `error`: why connecting HubSpot failed, from its callback (spec 007 §3–4).
+  validateSearch: (s): { error?: string } => ({ error: str(s.error) }),
+})
 
 const routeTree = rootRoute.addChildren([
   signupRoute,

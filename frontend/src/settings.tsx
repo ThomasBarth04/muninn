@@ -1,16 +1,21 @@
 // Settings: profile, team and billing (spec 001), sending domain (spec 002),
-// categories (spec 004). Owner-only controls are hidden from agents (spec 001 §17).
+// categories (spec 004), HubSpot (spec 007). Owner-only controls are hidden from agents (spec 001 §17).
 
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useParams } from '@tanstack/react-router'
-import { api, errorCode, formatDate, useAgents, useCategories, useMe } from './client'
+import { Link, useParams, useSearch } from '@tanstack/react-router'
+import { ago, api, errorCode, formatDate, useAgents, useCategories, useHubspot, useMe } from './client'
 import { CopyButton } from './auth'
 import type { Category } from './api/types/Category'
 import type { NewCategory } from './api/types/NewCategory'
 import type { PatchCategory } from './api/types/PatchCategory'
 import type { Me } from './api/types/Me'
 import type { SendingDomain } from './api/types/SendingDomain'
+import type { HubspotConnection } from './api/types/HubspotConnection'
+import type { HubspotPipeline } from './api/types/HubspotPipeline'
+import type { HubspotStatus } from './api/types/HubspotStatus'
+import type { SetPipelines } from './api/types/SetPipelines'
+import type { UrlResponse } from './api/types/UrlResponse'
 
 const SECTIONS = [
   { section: 'profile', label: 'Profile' },
@@ -18,18 +23,22 @@ const SECTIONS = [
   { section: 'billing', label: 'Billing' },
   { section: 'sending', label: 'Sending domain' },
   { section: 'categories', label: 'Categories' },
+  { section: 'hubspot', label: 'HubSpot' },
 ] as const
 
 export function Settings() {
   const { section = 'profile' } = useParams({ strict: false })
   const me = useMe()
+  // HubSpot only when the server has the app (spec 007 §1).
+  const hubspot = useHubspot()
   if (!me.data) return null
   const isOwner = me.data.agent.role === 'owner'
+  const sections = SECTIONS.filter((s) => s.section !== 'hubspot' || hubspot.data)
   return (
     <div className="settings">
       <nav className="views">
         <h2>Settings</h2>
-        {SECTIONS.map((s) => (
+        {sections.map((s) => (
           <Link key={s.section} to="/settings/$section" params={{ section: s.section }} className={s.section === section ? 'active' : ''}>
             {s.label}
           </Link>
@@ -41,6 +50,7 @@ export function Settings() {
         {section === 'billing' && <BillingSection isOwner={isOwner} />}
         {section === 'sending' && <Sending isOwner={isOwner} />}
         {section === 'categories' && <Categories isOwner={isOwner} />}
+        {section === 'hubspot' && hubspot.data && <HubSpot isOwner={isOwner} status={hubspot.data} />}
       </div>
     </div>
   )
@@ -486,5 +496,164 @@ function CategoryRow({ c, isOwner }: { c: Category; isOwner: boolean }) {
         )}
       </td>
     </tr>
+  )
+}
+
+// Spec 007: connect HubSpot, pick its pipelines, watch the import, disconnect.
+const CONNECT_ERRORS: Record<string, string> = {
+  expired: 'That link expired — connect again.',
+  denied: 'HubSpot was not given access. Connect again to try once more.',
+  portalTaken: 'This HubSpot account is connected to another Muninn workspace.',
+  alreadyConnected: 'This workspace is already connected to a HubSpot account. Disconnect it first.',
+  upstream: 'HubSpot did not answer. Try again.',
+}
+
+const n = (x: number) => x.toLocaleString()
+
+function HubSpot({ isOwner, status }: { isOwner: boolean; status: HubspotStatus }) {
+  const { error } = useSearch({ strict: false })
+  const qc = useQueryClient()
+  const [confirming, setConfirming] = useState(false)
+  const connect = useMutation({
+    mutationFn: () => api.post<UrlResponse>('/integrations/hubspot/connect'),
+    onSuccess: (r) => window.location.assign(r.url),
+  })
+  const disconnect = useMutation({
+    mutationFn: () => api.del('/integrations/hubspot'),
+    onSuccess: () => {
+      setConfirming(false)
+      qc.invalidateQueries({ queryKey: ['hubspot'] })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+  })
+  const c = status.connection
+  const connectButton = (label: string) => (
+    <button className="primary" disabled={connect.isPending} onClick={() => connect.mutate()}>
+      {label}
+    </button>
+  )
+
+  return (
+    <section className="card">
+      <h1>HubSpot</h1>
+      {error && CONNECT_ERRORS[error] && <p className="error">{CONNECT_ERRORS[error]}</p>}
+      {connect.isError && <p className="error">Could not reach HubSpot. Try again.</p>}
+      {!c ? (
+        <>
+          <p>
+            Answering in HubSpot Help Desk? Connect it and Muninn reads your tickets: the last 12 months come in, and every
+            change after that. Muninn never writes to HubSpot — you keep replying there.
+          </p>
+          {disconnect.isSuccess && (
+            <p className="muted">Disconnected. If Muninn still shows under Connected apps in HubSpot, remove it there.</p>
+          )}
+          {isOwner ? connectButton('Connect HubSpot') : <p className="muted">Only the workspace owner can connect HubSpot.</p>}
+        </>
+      ) : (
+        <>
+          <p>
+            <strong>{c.accountName}</strong> <HubSpotState c={c} />
+          </p>
+          {c.status === 'revoked' && (
+            <p className="error">HubSpot disconnected Muninn. Reconnect the same account, or disconnect.</p>
+          )}
+          {c.status !== 'revoked' && c.lastError && <p className="error">Last attempt failed: {c.lastError}.</p>}
+          {c.skipped > 0 && <p className="muted">{n(c.skipped)} skipped — no customer email.</p>}
+          {isOwner ? (
+            <>
+              {c.status === 'pickPipelines' && <p>Tick the pipelines that are support. Nothing is imported until you save.</p>}
+              <Pipelines key={c.pipelines.map((p) => `${p.id}${p.selected}`).join()} c={c} />
+              <div className="inline">
+                {c.status === 'revoked' && connectButton('Reconnect')}
+                {!confirming ? (
+                  <button onClick={() => setConfirming(true)}>Disconnect</button>
+                ) : (
+                  <>
+                    <span>
+                      Disconnect HubSpot? Closed tickets stay in the brain; open ones are removed from Muninn — they are still in
+                      HubSpot.
+                    </span>
+                    <button className="primary" disabled={disconnect.isPending} onClick={() => disconnect.mutate()}>
+                      Disconnect
+                    </button>
+                    <button onClick={() => setConfirming(false)}>Cancel</button>
+                  </>
+                )}
+                {disconnect.isError && <span className="error">Could not disconnect. Try again.</span>}
+              </div>
+            </>
+          ) : (
+            <p className="muted">
+              Syncing {c.pipelines.filter((p) => p.selected).map((p) => p.label).join(', ') || 'no pipelines yet'}. Only the
+              workspace owner changes this.
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+function HubSpotState({ c }: { c: HubspotConnection }) {
+  if (c.status === 'pickPipelines') return <span className="pill status-new">Connected</span>
+  if (c.status === 'revoked') return <span className="pill status-waitingOnUs">Disconnected</span>
+  if (c.status === 'importing' && c.import)
+    return (
+      <span className="muted">
+        Importing from HubSpot — {n(c.import.done)} of {n(c.import.total)} tickets{' '}
+        <progress max={c.import.total || 1} value={c.import.done} />
+      </span>
+    )
+  return (
+    <span className="muted">
+      Synced — {n(c.tickets)} tickets{c.lastSyncedAt && <>, last change {ago(c.lastSyncedAt)}</>}
+    </span>
+  )
+}
+
+function Pipelines({ c }: { c: HubspotConnection }) {
+  const qc = useQueryClient()
+  const [ticked, setTicked] = useState(() => new Set(c.pipelines.filter((p) => p.selected).map((p) => p.id)))
+  const save = useMutation({
+    mutationFn: () =>
+      api.put<HubspotConnection>('/integrations/hubspot/pipelines', { pipelineIds: [...ticked] } satisfies SetPipelines),
+    onSuccess: (connection) => {
+      qc.setQueryData(['hubspot'], { connection })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+  })
+  const first = c.status === 'pickPipelines'
+  const unticking = !first && c.pipelines.some((p) => p.selected && !ticked.has(p.id))
+  const changed = first || c.pipelines.some((p) => p.selected !== ticked.has(p.id))
+  const toggle = (p: HubspotPipeline) =>
+    setTicked((t) => {
+      const next = new Set(t)
+      if (next.has(p.id)) next.delete(p.id)
+      else next.add(p.id)
+      return next
+    })
+  return (
+    <form
+      className="stack"
+      onSubmit={(e: FormEvent) => {
+        e.preventDefault()
+        save.mutate()
+      }}
+    >
+      <h3>Pipelines</h3>
+      {c.pipelines.map((p) => (
+        <label key={p.id} className="check">
+          <input type="checkbox" checked={ticked.has(p.id)} onChange={() => toggle(p)} /> {p.label}
+        </label>
+      ))}
+      {unticking && <p className="error">Unticking a pipeline removes its tickets from Muninn, closed ones too.</p>}
+      <div>
+        <button className="primary" disabled={save.isPending || !changed || ticked.size === 0}>
+          {first ? 'Start import' : 'Save'}
+        </button>{' '}
+        {ticked.size === 0 && <span className="muted">Tick at least one pipeline.</span>}
+        {save.isError && <span className="error">Could not save. Try again.</span>}
+      </div>
+    </form>
   )
 }

@@ -105,6 +105,7 @@ export function Inbox() {
               {t.priority && <span className={`pill priority-${t.priority}`}>{PRIORITY_LABELS[t.priority]}</span>}
               <span>{t.owner?.name ?? 'Unassigned'}</span>
               {t.category && <span className="pill">{t.category.name}</span>}
+              {t.hubspot && <span className="pill">HubSpot</span>}
             </div>
           </Link>
         ))}
@@ -148,13 +149,26 @@ export function TicketPane() {
           )}
           <h1>{t.subject}</h1>
           <StatusPill status={t.status} />
+          {t.hubspot && (
+            <>
+              <span className="pill">HubSpot</span>
+              <a href={t.hubspot.url} target="_blank" rel="noopener noreferrer">
+                Open in HubSpot
+              </a>
+            </>
+          )}
         </header>
         <div className="messages">
           {t.messages.map((m) => (
             <MessageView key={m.id} m={m} ticketId={t.id} />
           ))}
         </div>
-        <Composer ticketId={t.id} />
+        {/* Spec 007 §25: a HubSpot ticket is answered in HubSpot. */}
+        {t.hubspot ? (
+          <p className="composer muted">Synced from HubSpot. Reply there, and change its status, owner and priority there.</p>
+        ) : (
+          <Composer ticketId={t.id} />
+        )}
       </section>
       <Sidebar t={t} view={view} />
     </>
@@ -265,6 +279,8 @@ function Sidebar({ t, view }: { t: TicketDetail; view: string }) {
   })
   // An archived category is not offered, but a ticket that has it keeps showing it (spec 004 §3).
   const options = (categories.data?.categories ?? []).filter((c) => !c.archived || c.id === t.category?.id)
+  // Spec 007 §25–26: HubSpot owns these; the category stays Muninn's own.
+  const fromHubspot = t.hubspot !== null
 
   return (
     <aside className="sidebar" aria-label="Ticket details">
@@ -272,7 +288,7 @@ function Sidebar({ t, view }: { t: TicketDetail; view: string }) {
         <h2>Ticket</h2>
         <label>
           Status
-          <select value={t.status} onChange={(e) => patch.mutate({ status: e.target.value as Ticket['status'] })}>
+          <select value={t.status} disabled={fromHubspot} onChange={(e) => patch.mutate({ status: e.target.value as Ticket['status'] })}>
             {Object.entries(STATUS_LABELS).map(([k, v]) => (
               <option key={k} value={k}>
                 {v}
@@ -282,7 +298,7 @@ function Sidebar({ t, view }: { t: TicketDetail; view: string }) {
         </label>
         <label>
           Owner
-          <select value={t.owner?.id ?? ''} onChange={(e) => patch.mutate({ ownerId: e.target.value || null })}>
+          <select value={t.owner?.id ?? ''} disabled={fromHubspot} onChange={(e) => patch.mutate({ ownerId: e.target.value || null })}>
             <option value="">Unassigned</option>
             {agents.data?.agents.map((a) => (
               <option key={a.id} value={a.id}>
@@ -298,6 +314,7 @@ function Sidebar({ t, view }: { t: TicketDetail; view: string }) {
           Priority
           <select
             value={t.priority ?? ''}
+            disabled={fromHubspot}
             onChange={(e) => patch.mutate({ priority: (e.target.value || null) as Ticket['priority'] })}
           >
             <option value="">None</option>
@@ -319,6 +336,7 @@ function Sidebar({ t, view }: { t: TicketDetail; view: string }) {
             ))}
           </select>
         </label>
+        {fromHubspot && <p className="hint">Status, owner and priority come from HubSpot.</p>}
         {t.category?.source === 'jev' && t.category.probability !== null && (
           <p className="hint">Set by Jev · {pct(t.category.probability)}</p>
         )}

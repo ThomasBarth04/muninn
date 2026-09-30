@@ -1,4 +1,4 @@
-//! The HTTP contract of specs 001–004, as Rust structs. `cargo test` exports
+//! The HTTP contract of specs 001–007, as Rust structs. `cargo test` exports
 //! each one to `frontend/src/api/types/` with ts-rs (ADR 0007) — the frontend
 //! never hand-writes these. If this file and a spec disagree, the spec is right.
 //!
@@ -151,7 +151,7 @@ pub struct InviteRequest {
     pub email: String,
 }
 
-/// Stripe Checkout and customer portal.
+/// Stripe Checkout and customer portal; HubSpot's consent page.
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct UrlResponse {
@@ -223,6 +223,8 @@ pub struct Ticket {
     pub last_message: LastMessage,
     pub created_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
+    /// Null for a ticket that did not come from HubSpot (spec 007).
+    pub hubspot: Option<HubspotLink>,
 }
 
 #[derive(Serialize, TS)]
@@ -456,4 +458,63 @@ pub struct PatchCategory {
     pub description: Option<String>,
     #[ts(optional)]
     pub archived: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// Spec 007 — HubSpot sync
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HubspotLink {
+    pub url: String,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone)]
+#[ts(export)]
+pub struct HubspotPipeline {
+    pub id: String,
+    pub label: String,
+    pub selected: bool,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct ImportProgress {
+    pub done: i32,
+    /// HubSpot's own count; it can move while the import runs.
+    pub total: i32,
+}
+
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct HubspotConnection {
+    #[ts(type = "number")]
+    pub account_id: i64,
+    pub account_name: String,
+    #[ts(type = "'pickPipelines' | 'importing' | 'synced' | 'revoked'")]
+    pub status: String,
+    pub pipelines: Vec<HubspotPipeline>,
+    /// Set while `importing`, otherwise null.
+    pub import: Option<ImportProgress>,
+    pub tickets: i32,
+    pub skipped: i32,
+    pub last_synced_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub connected_at: DateTime<Utc>,
+}
+
+/// `GET /api/integrations/hubspot`
+#[derive(Serialize, TS)]
+#[ts(export)]
+pub struct HubspotStatus {
+    pub connection: Option<HubspotConnection>,
+}
+
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetPipelines {
+    pub pipeline_ids: Vec<String>,
 }

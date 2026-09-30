@@ -13,6 +13,8 @@
 --   1. Postmark: delete the sending domain (postmark_domain_id), if any.
 --   2. Stripe: delete the customer (stripe_customer_id), which also cancels
 --      the subscription and removes their card.
+--   2b. HubSpot: uninstall Muninn's app from their account (hubspot_portal_id),
+--      if it was connected (spec 007 §32).
 --   3. Tell the requester that backups age out after the wal-g retention
 --      (14 daily base backups, see compose.yaml) and are not edited.
 
@@ -24,14 +26,18 @@ BEGIN;
 SELECT id AS ws FROM workspaces WHERE slug = :'slug' \gset
 
 \echo 'Deleting workspace:'
-SELECT id, name, slug, billing_status, stripe_customer_id, postmark_domain_id, sending_domain
+SELECT id, name, slug, billing_status, stripe_customer_id, postmark_domain_id, sending_domain,
+       (SELECT portal_id FROM hubspot_connections WHERE workspace_id = :'ws') AS hubspot_portal_id
 FROM workspaces WHERE id = :'ws';
 
 SELECT (SELECT count(*) FROM agents      WHERE workspace_id = :'ws') AS agents,
        (SELECT count(*) FROM contacts    WHERE workspace_id = :'ws') AS contacts,
        (SELECT count(*) FROM tickets     WHERE workspace_id = :'ws') AS tickets,
        (SELECT count(*) FROM messages    WHERE workspace_id = :'ws') AS messages,
-       (SELECT count(*) FROM attachments WHERE workspace_id = :'ws') AS attachments;
+       (SELECT count(*) FROM attachments WHERE workspace_id = :'ws') AS attachments,
+       (SELECT count(*) FROM tickets     WHERE workspace_id = :'ws' AND hubspot_id IS NOT NULL) AS hubspot_tickets,
+       (SELECT count(*) FROM hubspot_connections WHERE workspace_id = :'ws') AS hubspot_connections,
+       (SELECT count(*) FROM hubspot_states      WHERE workspace_id = :'ws') AS hubspot_states;
 
 DELETE FROM workspaces WHERE id = :'ws';
 

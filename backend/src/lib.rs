@@ -7,6 +7,7 @@ pub mod copilot;
 pub mod credentials;
 pub mod db;
 pub mod error;
+pub mod hubspot;
 pub mod import;
 pub mod inbound;
 pub mod jev;
@@ -78,6 +79,13 @@ pub struct Config {
     pub stripe_webhook_secret: Option<String>,
     /// The per-seat monthly price (spec 001 §23: configuration, not code).
     pub stripe_price_id: Option<String>,
+
+    pub hubspot_api_url: String,
+    /// HubSpot's own app: the consent page and every ticket's record.
+    pub hubspot_app_url: String,
+    /// Without both, the HubSpot sync is off (spec 007 §1).
+    pub hubspot_client_id: Option<String>,
+    pub hubspot_client_secret: Option<String>,
 }
 
 impl Config {
@@ -106,6 +114,10 @@ impl Config {
             stripe_secret_key: var("STRIPE_SECRET_KEY"),
             stripe_webhook_secret: var("STRIPE_WEBHOOK_SECRET"),
             stripe_price_id: var("STRIPE_PRICE_ID"),
+            hubspot_api_url: or("HUBSPOT_API_URL", "https://api.hubapi.com"),
+            hubspot_app_url: or("HUBSPOT_APP_URL", "https://app.hubspot.com"),
+            hubspot_client_id: var("HUBSPOT_CLIENT_ID"),
+            hubspot_client_secret: var("HUBSPOT_CLIENT_SECRET"),
         }
     }
 
@@ -136,7 +148,7 @@ impl AppState {
     }
 }
 
-/// `/api/*` (session, JSON), `/hooks/*` (Postmark, Stripe), `/healthz`, and
+/// `/api/*` (session, JSON), `/hooks/*` (Postmark, Stripe, HubSpot), `/healthz`, and
 /// the SPA for everything else (ADR 0007).
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
@@ -146,12 +158,14 @@ pub fn router(state: AppState) -> Router {
         .merge(mail::routes())
         .merge(copilot::routes())
         .merge(categories::routes())
+        .merge(hubspot::routes())
         .fallback(|| async { ApiError::not_found() })
         .layer(middleware::from_fn(session::require_json));
 
     let hooks = Router::new()
         .merge(inbound::routes())
-        .merge(billing::hooks());
+        .merge(billing::hooks())
+        .merge(hubspot::hooks());
 
     let spa = spa(&state.cfg.static_dir);
 
