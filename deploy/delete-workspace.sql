@@ -31,7 +31,11 @@ SELECT (SELECT count(*) FROM agents      WHERE workspace_id = :'ws') AS agents,
        (SELECT count(*) FROM contacts    WHERE workspace_id = :'ws') AS contacts,
        (SELECT count(*) FROM tickets     WHERE workspace_id = :'ws') AS tickets,
        (SELECT count(*) FROM messages    WHERE workspace_id = :'ws') AS messages,
-       (SELECT count(*) FROM attachments WHERE workspace_id = :'ws') AS attachments;
+       (SELECT count(*) FROM attachments WHERE workspace_id = :'ws') AS attachments,
+       (SELECT count(*) FROM ticket_reads WHERE workspace_id = :'ws') AS ticket_reads,
+       (SELECT count(*) FROM drafts      WHERE workspace_id = :'ws') AS drafts,
+       (SELECT count(*) FROM saved_views WHERE workspace_id = :'ws') AS saved_views,
+       (SELECT count(*) FROM snippets    WHERE workspace_id = :'ws') AS snippets;
 
 DELETE FROM workspaces WHERE id = :'ws';
 

@@ -97,3 +97,53 @@ async fn the_app_role_cannot_bypass_rls() {
             .unwrap();
     assert_eq!(owns, 0);
 }
+
+/// Every table that carries a tenant is one of these, with RLS forced and a
+/// policy. A new tenant table goes on this list in the change that adds it.
+const TENANT_TABLES: &[&str] = &[
+    "agents",
+    "attachments",
+    "categories",
+    "contacts",
+    "drafts",
+    "messages",
+    "saved_views",
+    "snippets",
+    "suggestion_feedback",
+    "suggestions",
+    "ticket_reads",
+    "tickets",
+];
+/// ADR 0003's named exceptions: reached before the tenant is known.
+const CROSS_TENANT: &[&str] = &["auth_links", "jobs", "sessions"];
+
+#[tokio::test]
+async fn every_tenant_table_is_behind_rls() {
+    let Some(app) = common::spawn().await else {
+        return;
+    };
+    let tables: Vec<(String, bool, bool, bool)> = sqlx::query_as(
+        "SELECT c.relname::text, c.relrowsecurity, c.relforcerowsecurity,
+                EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid)
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relkind = 'r'
+           AND EXISTS (SELECT 1 FROM information_schema.columns i
+                       WHERE i.table_schema = 'public' AND i.table_name = c.relname
+                         AND i.column_name = 'workspace_id')
+         ORDER BY 1",
+    )
+    .fetch_all(&app.owner)
+    .await
+    .unwrap();
+    let tenant: Vec<&str> = tables
+        .iter()
+        .map(|(t, ..)| t.as_str())
+        .filter(|t| !CROSS_TENANT.contains(t))
+        .collect();
+    assert_eq!(tenant, TENANT_TABLES);
+    for (table, enabled, forced, policy) in tables {
+        if TENANT_TABLES.contains(&table.as_str()) {
+            assert!(enabled && forced && policy, "{table} is not behind RLS");
+        }
+    }
+}

@@ -13,7 +13,9 @@ import {
 } from '@tanstack/react-router'
 import { ApiError, BETA_CONTACT, api, useMe } from './client'
 import { Auth, BetaNote, ForgotPassword, Login, Onboarding } from './auth'
-import { Inbox, NoTicket, TicketPane } from './inbox'
+import { Inbox, validateInboxSearch } from './inbox'
+import { NoTicket, TicketPane } from './ticket'
+import { Toasts } from './triage'
 import { Settings } from './settings'
 import './app.css'
 
@@ -76,6 +78,7 @@ function Shell() {
         </button>
       </header>
       <main className="main">{billing.locked ? <Paused /> : <Outlet />}</main>
+      <Toasts />
     </div>
   )
 }
@@ -115,15 +118,15 @@ const indexRoute = createRoute({
   },
 })
 const onboardingRoute = createRoute({ getParentRoute: () => appRoute, path: '/onboarding', component: Onboarding })
-const inboxRoute = createRoute({ getParentRoute: () => appRoute, path: '/inbox/$view', component: Inbox })
-const noTicketRoute = createRoute({ getParentRoute: () => inboxRoute, path: '/', component: NoTicket })
-const ticketRoute = createRoute({
-  getParentRoute: () => inboxRoute,
-  path: '$ticketId',
-  component: TicketPane,
-  // `from`: the ticket a copilot case was opened from, for "Back".
-  validateSearch: (s): { from?: string } => ({ from: str(s.from) }),
+// Spec 006 §11: filters, search and sort live in the URL.
+const inboxRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/inbox/$view',
+  component: Inbox,
+  validateSearch: validateInboxSearch,
 })
+const noTicketRoute = createRoute({ getParentRoute: () => inboxRoute, path: '/', component: NoTicket })
+const ticketRoute = createRoute({ getParentRoute: () => inboxRoute, path: '$ticketId', component: TicketPane })
 const settingsIndexRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/settings',

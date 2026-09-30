@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
 use tokio::sync::{Semaphore, watch};
 use uuid::Uuid;
@@ -42,12 +43,27 @@ pub async fn enqueue(
     kind: &str,
     subject_id: Option<Uuid>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO jobs (workspace_id, kind, subject_id) VALUES ($1, $2, $3)")
-        .bind(workspace_id)
-        .bind(kind)
-        .bind(subject_id)
-        .execute(&mut **tx)
-        .await?;
+    enqueue_at(tx, workspace_id, kind, subject_id, None).await
+}
+
+/// As `enqueue`, due at `run_at` instead of now: a reply's undo window, a
+/// snooze's end (spec 006 §25, §34).
+pub async fn enqueue_at(
+    tx: &mut Transaction<'static, Postgres>,
+    workspace_id: Uuid,
+    kind: &str,
+    subject_id: Option<Uuid>,
+    run_at: Option<DateTime<Utc>>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO jobs (workspace_id, kind, subject_id, run_at) VALUES ($1, $2, $3, coalesce($4, now()))",
+    )
+    .bind(workspace_id)
+    .bind(kind)
+    .bind(subject_id)
+    .bind(run_at)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
@@ -80,6 +96,7 @@ async fn dispatch(st: &AppState, job: &Job) -> JobResult {
         "suggest" => crate::copilot::suggest_job(st, ws, subject()?).await,
         "categorize" => crate::categories::categorize_job(st, ws, subject()?).await,
         "send" => crate::mail::send_job(st, ws, subject()?).await,
+        "wake" => crate::tickets::wake_job(st, ws, subject()?).await,
         "seats" => crate::billing::seats_job(st, ws).await,
         other => Err(JobError::Fail(format!("unknown job kind {other}"))),
     }
@@ -92,7 +109,10 @@ async fn give_up(st: &AppState, job: &Job, error: &str) {
     let result = match job.kind.as_str() {
         "suggest" => crate::copilot::suggest_gave_up(st, ws, id).await,
         "send" => crate::mail::send_gave_up(st, ws, id, error).await,
-        _ => Ok(()), // categorize: stays uncategorised (spec 004 §10); seats: logged
+        // categorize: stays uncategorised (spec 004 §10); seats: logged; wake:
+        // back in its views at its time anyway (they compare with now), just
+        // not moved to the top.
+        _ => Ok(()),
     };
     if let Err(e) = result {
         tracing::error!(job = job.id, "give_up: {e}");

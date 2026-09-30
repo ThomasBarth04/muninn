@@ -328,9 +328,10 @@ This route crosses tenants (it finds the workspace by slug) and is one of ADR
 - Rendering HTML email; rich-text replies; attachments on replies.
 - Cc/Bcc on replies, composing a new outbound email (ADR 0009), forwarding a
   ticket.
-- Ticket search, tags, snippets, SLAs, routing and auto-assignment, companies,
-  @mentions and notifications, keyboard shortcuts, custom pipelines or statuses,
-  ticket numbers, merging and splitting tickets, collision warnings.
+- Tags, SLAs, routing and auto-assignment, companies, @mentions and
+  notifications, custom pipelines or statuses, merging and splitting tickets.
+  (Search, snippets, keyboard shortcuts, ticket numbers and collision warnings
+  are spec 006.)
 - Automatic acknowledgement emails ("we got your message").
 - Bounce and spam-complaint webhooks from Postmark; spam filtering of inbound.
 

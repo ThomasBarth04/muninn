@@ -237,11 +237,13 @@ async fn store(st: &AppState, ws: Uuid, mail: &Inbound, token: &str) -> Result<(
 
     let ticket_id = match ticket {
         // §6: an answer moves the ticket back to us — a closed one reopens
-        // and leaves the brain (ADR 0010). The owner is kept.
+        // and leaves the brain (ADR 0010), a snoozed one wakes (spec 006 §26).
+        // The owner is kept; the number and the waiting clock are
+        // migration 0005's trigger and waiting_since().
         Some(id) => {
             sqlx::query(
                 "UPDATE tickets SET status = 'waitingOnUs', last_activity_at = now(),
-                        search = NULL, closed_at = NULL
+                        search = NULL, closed_at = NULL, snoozed_until = NULL
                  WHERE workspace_id = $1 AND id = $2",
             )
             .bind(ws)

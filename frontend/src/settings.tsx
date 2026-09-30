@@ -1,16 +1,18 @@
 // Settings: profile, team and billing (spec 001), sending domain (spec 002),
-// categories (spec 004). Owner-only controls are hidden from agents (spec 001 §17).
+// categories (spec 004), snippets and keyboard shortcuts (spec 006).
+// Owner-only controls are hidden from agents (spec 001 §17).
 
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from '@tanstack/react-router'
-import { api, errorCode, formatDate, useAgents, useCategories, useMe } from './client'
+import { api, errorCode, formatDate, setShortcutsOn, shortcutsOn, useAgents, useCategories, useMe, useSnippets } from './client'
 import { CopyButton } from './auth'
 import type { Category } from './api/types/Category'
 import type { NewCategory } from './api/types/NewCategory'
 import type { PatchCategory } from './api/types/PatchCategory'
 import type { Me } from './api/types/Me'
 import type { SendingDomain } from './api/types/SendingDomain'
+import type { Snippet } from './api/types/Snippet'
 
 const SECTIONS = [
   { section: 'profile', label: 'Profile' },
@@ -18,6 +20,7 @@ const SECTIONS = [
   { section: 'billing', label: 'Billing' },
   { section: 'sending', label: 'Sending domain' },
   { section: 'categories', label: 'Categories' },
+  { section: 'snippets', label: 'Snippets' },
 ] as const
 
 export function Settings() {
@@ -41,6 +44,7 @@ export function Settings() {
         {section === 'billing' && <BillingSection isOwner={isOwner} />}
         {section === 'sending' && <Sending isOwner={isOwner} />}
         {section === 'categories' && <Categories isOwner={isOwner} />}
+        {section === 'snippets' && <Snippets />}
       </div>
     </div>
   )
@@ -81,7 +85,34 @@ function Profile({ me }: { me: Me }) {
         <code>{me.workspace.inboundAddress}</code> <CopyButton text={me.workspace.inboundAddress} />
       </div>
       <ChangePassword />
+      <KeyboardShortcuts />
     </section>
+  )
+}
+
+// Spec 006 §41: on this device only. Off leaves Ctrl/⌘ combinations working (WCAG 2.1.4).
+function KeyboardShortcuts() {
+  const [on, setOn] = useState(shortcutsOn)
+  const set = (value: boolean) => {
+    setShortcutsOn(value)
+    setOn(value)
+  }
+  return (
+    <fieldset className="stack plain-fieldset">
+      <h3>Keyboard shortcuts</h3>
+      <div className="row-buttons" role="radiogroup" aria-label="Keyboard shortcuts">
+        <label className="inline-check">
+          <input type="radio" name="shortcuts" checked={on} onChange={() => set(true)} /> On
+        </label>
+        <label className="inline-check">
+          <input type="radio" name="shortcuts" checked={!on} onChange={() => set(false)} /> Off
+        </label>
+      </div>
+      <span className="hint">
+        Single-key shortcuts like j, k and e. Turn them off if they get in the way of a screen reader; Ctrl/⌘ combinations keep
+        working. Stored on this device. Press ? in the inbox to see them all.
+      </span>
+    </fieldset>
   )
 }
 
@@ -486,5 +517,119 @@ function CategoryRow({ c, isOwner }: { c: Category; isOwner: boolean }) {
         )}
       </td>
     </tr>
+  )
+}
+
+// Spec 006 §37–38: any agent adds, edits and deletes them.
+const SNIPPET_ERRORS: Record<string, string> = {
+  invalidName: 'Enter a name of 1 to 60 characters.',
+  invalidText: 'Enter text of 1 to 5,000 characters.',
+}
+
+function Snippets() {
+  const qc = useQueryClient()
+  const snippets = useSnippets()
+  const [editing, setEditing] = useState<Snippet | 'new' | null>(null)
+  return (
+    <section className="card">
+      <h1>Snippets</h1>
+      <p className="muted">
+        Saved text anyone on the team can insert into a reply: type # in the composer, or use the Snippets button.{' '}
+        <code>{'{{contact.firstName}}'}</code>, <code>{'{{contact.name}}'}</code>, <code>{'{{agent.firstName}}'}</code> and{' '}
+        <code>{'{{agent.name}}'}</code> are filled in when inserted.
+      </p>
+      <table>
+        <tbody>
+          {snippets.data?.snippets.map((s) =>
+            editing !== 'new' && editing?.id === s.id ? (
+              <tr key={s.id}>
+                <td colSpan={3}>
+                  <SnippetForm snippet={s} onDone={() => setEditing(null)} />
+                </td>
+              </tr>
+            ) : (
+              <SnippetRow key={s.id} s={s} onEdit={() => setEditing(s)} onDeleted={() => qc.invalidateQueries({ queryKey: ['snippets'] })} />
+            ),
+          )}
+        </tbody>
+      </table>
+      {editing === 'new' ? (
+        <SnippetForm onDone={() => setEditing(null)} />
+      ) : (
+        <button className="primary" onClick={() => setEditing('new')}>
+          Add a snippet
+        </button>
+      )}
+    </section>
+  )
+}
+
+function SnippetRow({ s, onEdit, onDeleted }: { s: Snippet; onEdit: () => void; onDeleted: () => void }) {
+  const [confirm, setConfirm] = useState(false)
+  const remove = useMutation({ mutationFn: () => api.del(`/snippets/${s.id}`), onSuccess: onDeleted })
+  return (
+    <tr>
+      <td>
+        <strong>{s.name}</strong>
+      </td>
+      <td className="muted snippet-text">{s.text}</td>
+      <td className="right nowrap">
+        {confirm ? (
+          <>
+            Delete {s.name}?{' '}
+            <button className="danger" disabled={remove.isPending} onClick={() => remove.mutate()}>
+              Delete
+            </button>{' '}
+            <button onClick={() => setConfirm(false)}>Cancel</button>
+          </>
+        ) : (
+          <>
+            <button onClick={onEdit}>Edit</button> <button onClick={() => setConfirm(true)}>Delete</button>
+          </>
+        )}
+        {remove.isError && <span className="error"> Could not delete it.</span>}
+      </td>
+    </tr>
+  )
+}
+
+function SnippetForm({ snippet, onDone }: { snippet?: Snippet; onDone: () => void }) {
+  const qc = useQueryClient()
+  const [name, setName] = useState(snippet?.name ?? '')
+  const [text, setText] = useState(snippet?.text ?? '')
+  const save = useMutation({
+    mutationFn: () => (snippet ? api.patch(`/snippets/${snippet.id}`, { name, text }) : api.post('/snippets', { name, text })),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['snippets'] })
+      onDone()
+    },
+  })
+  const code = errorCode(save.error)
+  return (
+    <form
+      className="stack"
+      onSubmit={(e) => {
+        e.preventDefault()
+        save.mutate()
+      }}
+    >
+      <label>
+        Name
+        <input required autoFocus maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <label>
+        Text
+        <textarea required rows={6} maxLength={5000} value={text} onChange={(e) => setText(e.target.value)} />
+      </label>
+      <div>
+        <button className="primary" disabled={save.isPending}>
+          Save
+        </button>{' '}
+        <button type="button" onClick={onDone}>
+          Cancel
+        </button>{' '}
+        {code && <span className="error">{SNIPPET_ERRORS[code] ?? 'Could not save.'}</span>}
+      </div>
+    </form>
   )
 }

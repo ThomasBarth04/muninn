@@ -115,7 +115,9 @@ pub struct TestApp {
     pub mock: Mock,
 }
 
-pub async fn spawn() -> Option<TestApp> {
+/// A fresh, empty database: owned by the owner role, migrations not run.
+/// `None` without `TEST_DATABASE_URL`, as `spawn`.
+pub async fn database() -> Option<(PgPool, PgConnectOptions)> {
     let Ok(admin_url) = std::env::var("TEST_DATABASE_URL") else {
         assert!(
             std::env::var_os("CI").is_none(),
@@ -159,6 +161,11 @@ pub async fn spawn() -> Option<TestApp> {
         .connect_with(base.clone().username("muninn_owner").password("muninn"))
         .await
         .expect("owner db");
+    Some((owner, base))
+}
+
+pub async fn spawn() -> Option<TestApp> {
+    let (owner, base) = database().await?;
     sqlx::migrate!().run(&owner).await.expect("migrations");
     let db = PgPoolOptions::new()
         .max_connections(5)
@@ -217,7 +224,13 @@ impl TestApp {
         }
     }
 
+    /// Every job due now. A reply's send job first waits out its 10-second
+    /// undo window (spec 006 §34); tests skip the wait unless they test it.
     pub async fn run_jobs(&self) -> usize {
+        sqlx::query("UPDATE jobs SET run_at = now() WHERE kind = 'send' AND attempts = 0")
+            .execute(&self.owner)
+            .await
+            .unwrap();
         muninn::jobs::run_due(&self.st).await
     }
 
@@ -355,4 +368,93 @@ impl Client {
     pub async fn delete(&mut self, path: &str) -> Res {
         self.req("DELETE", path, None).await
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tickets: a workspace arranged directly, and mail in through the webhook.
+// ---------------------------------------------------------------------------
+
+pub const DOMAIN: &str = "in.muninn.test";
+
+/// A workspace and a logged-in agent, arranged directly (spec 001's flow has
+/// its own tests).
+pub async fn workspace(
+    app: &TestApp,
+    slug: &str,
+    email: &str,
+    role: &str,
+) -> (uuid::Uuid, uuid::Uuid, Client) {
+    let ws: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO workspaces (id, name, slug, language, trial_ends_at)
+         VALUES (gen_random_uuid(), initcap($1), $1, 'english', now() + interval '14 days') RETURNING id",
+    )
+    .bind(slug)
+    .fetch_one(&app.owner)
+    .await
+    .unwrap();
+    let agent = agent(app, ws, email, role).await;
+    let client = login(app, ws, agent).await;
+    (ws, agent, client)
+}
+
+pub async fn agent(app: &TestApp, ws: uuid::Uuid, email: &str, role: &str) -> uuid::Uuid {
+    sqlx::query_scalar("INSERT INTO agents (workspace_id, email, name, role) VALUES ($1, $2, split_part($2, '@', 1), $3) RETURNING id")
+        .bind(ws)
+        .bind(email)
+        .bind(role)
+        .fetch_one(&app.owner)
+        .await
+        .unwrap()
+}
+
+pub async fn login(app: &TestApp, ws: uuid::Uuid, agent: uuid::Uuid) -> Client {
+    let token = muninn::session::new_token();
+    sqlx::query("INSERT INTO sessions (token_hash, workspace_id, agent_id) VALUES ($1, $2, $3)")
+        .bind(muninn::session::hash_token(&token))
+        .bind(ws)
+        .bind(agent)
+        .execute(&app.owner)
+        .await
+        .unwrap();
+    let mut client = app.client();
+    client.cookie = Some(format!("muninn_session={token}"));
+    client
+}
+
+/// A Postmark inbound payload from Ola to `to`.
+pub fn mail(to: &str, subject: &str, text: &str, message_id: &str) -> Value {
+    json!({
+        "OriginalRecipient": to,
+        "ToFull": [{ "Email": to, "Name": "", "MailboxHash": "" }],
+        "CcFull": [],
+        "FromFull": { "Email": "Ola@Kunde.no", "Name": "Ola Nordmann" },
+        "Subject": subject,
+        "MailboxHash": "",
+        "TextBody": text,
+        "HtmlBody": "",
+        "StrippedTextReply": "",
+        "Headers": [{ "Name": "Message-ID", "Value": format!("<{message_id}>") }],
+        "Attachments": [],
+    })
+}
+
+pub async fn deliver(app: &TestApp, payload: &Value) -> u16 {
+    deliver_as(app, payload, Some(INBOUND_PASSWORD)).await
+}
+
+pub async fn deliver_as(app: &TestApp, payload: &Value, password: Option<&str>) -> u16 {
+    let mut req = reqwest::Client::new()
+        .post(format!("{}/hooks/postmark/inbound", app.url))
+        .json(payload);
+    if let Some(p) = password {
+        req = req.basic_auth("postmark", Some(p));
+    }
+    req.send().await.unwrap().status().as_u16()
+}
+
+pub async fn count(app: &TestApp, sql: &str) -> i64 {
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_string()))
+        .fetch_one(&app.owner)
+        .await
+        .unwrap()
 }

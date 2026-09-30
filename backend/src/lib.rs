@@ -13,7 +13,9 @@ pub mod jev;
 pub mod jobs;
 pub mod mail;
 pub mod session;
+pub mod snippets;
 pub mod tickets;
+pub mod views;
 
 use std::sync::Arc;
 
@@ -146,6 +148,8 @@ pub fn router(state: AppState) -> Router {
         .merge(mail::routes())
         .merge(copilot::routes())
         .merge(categories::routes())
+        .merge(views::routes())
+        .merge(snippets::routes())
         .fallback(|| async { ApiError::not_found() })
         .layer(middleware::from_fn(session::require_json));
 

@@ -140,7 +140,7 @@ both use the same `state`.
 
 ## Out of scope
 
-- Views or filters by category; reporting.
+- Reporting. (Filtering and saved views by category are spec 006.)
 - Re-categorising when the list changes or when new messages arrive.
 - More than one category per ticket; nested categories.
 - Setting priority automatically.
