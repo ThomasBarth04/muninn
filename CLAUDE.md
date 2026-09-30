@@ -43,6 +43,28 @@ shape (not just adding a field) needs an ADR. TypeScript types are generated
 from the Rust structs with `ts-rs` — never hand-write a response type in
 `frontend/`.
 
+## Hooks
+
+`.claude/hooks/rules.py` enforces the rules above in code: it denies model SDKs,
+raw HTML in the frontend, inline attachments, edits to accepted ADRs and edits
+to committed migrations; it asks the user before an ADR is Accepted or a spec
+Agreed; and it flags tenant SQL without `workspace_id` and tenant tables
+without RLS. Edited `.rs` files are run through `rustfmt`. With `JEV_API_KEY` set (in `.claude/settings.local.json`
+`env`; for OpenRouter add `JEV_API_URL=https://openrouter.ai/api` and use an
+OpenRouter key), Jev also routes each prompt to a skill and the governing specs/ADRs, and
+holds Stop once when code changed a spec's behaviour but the spec didn't change.
+Jev only ever suggests; it fails open. `JEV_HOOKS=shadow|off`. After changing
+the script, run `python3 .claude/hooks/rules.py --selftest`.
+
+For Jev integration code, use the `typesafe` skill (project plugin);
+docs.typesafe.ai is the source of truth for the API.
+
+Also in `.claude/`: `rules/` (backend, migrations, frontend conventions,
+loaded when those files are touched), `/ship-spec` (implement an Agreed spec),
+`/ci` (CI locally, with a real Postgres) and the `rules-reviewer` agent (a
+diff against the rules above, before a commit). `/security-review` and
+`/claude-security` cover generic security.
+
 ## ADRs
 
 `/adr <title>` for a decision that is expensive to reverse: datastore, auth
