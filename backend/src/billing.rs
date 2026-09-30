@@ -1,4 +1,5 @@
-//! Spec 001 §18–26: trial, Stripe Checkout, portal, webhook, seat sync.
+//! Spec 001 §23–27: Stripe Checkout, portal, webhook, seat sync — switched
+//! off during the beta (no Stripe keys), kept and tested.
 //! Stripe over plain form posts — four endpoints do not need an SDK.
 
 use axum::body::Bytes;
@@ -83,7 +84,7 @@ fn url_of(v: &Value) -> ApiResult<Json<UrlResponse>> {
     Ok(Json(UrlResponse { url: url.into() }))
 }
 
-/// A subscription on the per-seat price, quantity = agents (§19). The
+/// A subscription on the per-seat price, quantity = agents (§23). The
 /// workspace id rides along twice so every later event can find it.
 async fn checkout(State(st): State<AppState>, auth: Auth) -> ApiResult<Json<UrlResponse>> {
     auth.require_owner()?;
@@ -129,7 +130,7 @@ async fn checkout(State(st): State<AppState>, auth: Auth) -> ApiResult<Json<UrlR
     url_of(&session)
 }
 
-/// Card, invoices, cancellation — all Stripe's page (§21).
+/// Card, invoices, cancellation — all Stripe's page (§24).
 async fn portal(State(st): State<AppState>, auth: Auth) -> ApiResult<Json<UrlResponse>> {
     auth.require_owner()?;
     let mut tx = tenant_tx(&st.db, auth.workspace_id).await?;
@@ -267,7 +268,7 @@ async fn webhook(
 }
 
 /// Agents were added or removed: bring the subscription quantity along,
-/// prorated (§22). Pending invites are not seats. Call inside the
+/// prorated (§25). Pending invites are not seats. Call inside the
 /// transaction that changed the agents.
 pub async fn seats_changed(tx: &mut Tx, ws: Uuid) -> Result<(), sqlx::Error> {
     let status: String = sqlx::query_scalar("SELECT billing_status FROM workspaces WHERE id = $1")

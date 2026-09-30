@@ -237,11 +237,13 @@ async fn store(st: &AppState, ws: Uuid, mail: &Inbound, token: &str) -> Result<(
 
     let ticket_id = match ticket {
         // §6: an answer moves the ticket back to us — a closed one reopens
-        // and leaves the brain (ADR 0010). The owner is kept.
+        // and leaves the brain (ADR 0010), a snoozed one wakes (spec 006 §26).
+        // The owner is kept; the number and the waiting clock are
+        // migration 0005's trigger and waiting_since().
         Some(id) => {
             sqlx::query(
                 "UPDATE tickets SET status = 'waitingOnUs', last_activity_at = now(),
-                        search = NULL, closed_at = NULL
+                        search = NULL, closed_at = NULL, snoozed_until = NULL
                  WHERE workspace_id = $1 AND id = $2",
             )
             .bind(ws)
@@ -395,7 +397,24 @@ pub fn html_to_text(html: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
+/// The named entities of Latin-1, in code point order from U+00A0: every
+/// letter Nordic and Western European mail spells as `&aring;` or `&eacute;`.
+const LATIN1: [&str; 96] = [
+    "nbsp", "iexcl", "cent", "pound", "curren", "yen", "brvbar", "sect", "uml", "copy", "ordf",
+    "laquo", "not", "shy", "reg", "macr", "deg", "plusmn", "sup2", "sup3", "acute", "micro",
+    "para", "middot", "cedil", "sup1", "ordm", "raquo", "frac14", "frac12", "frac34", "iquest",
+    "Agrave", "Aacute", "Acirc", "Atilde", "Auml", "Aring", "AElig", "Ccedil", "Egrave", "Eacute",
+    "Ecirc", "Euml", "Igrave", "Iacute", "Icirc", "Iuml", "ETH", "Ntilde", "Ograve", "Oacute",
+    "Ocirc", "Otilde", "Ouml", "times", "Oslash", "Ugrave", "Uacute", "Ucirc", "Uuml", "Yacute",
+    "THORN", "szlig", "agrave", "aacute", "acirc", "atilde", "auml", "aring", "aelig", "ccedil",
+    "egrave", "eacute", "ecirc", "euml", "igrave", "iacute", "icirc", "iuml", "eth", "ntilde",
+    "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute", "ucirc",
+    "uuml", "yacute", "thorn", "yuml",
+];
+
 /// One entity at the start of `s` → (text, bytes consumed). Unknown → `&`.
+/// ponytail: Latin-1 and the usual typography, not HTML5's 2,000 names; an
+/// unknown one stays as written.
 fn entity(s: &str) -> (String, usize) {
     // `;` is ASCII, so its byte position is a char boundary.
     let Some(end) = s.bytes().take(12).position(|b| b == b';') else {
@@ -409,6 +428,22 @@ fn entity(s: &str) -> (String, usize) {
         "quot" => Some('"'),
         "apos" => Some('\''),
         "nbsp" => Some(' '),
+        "hellip" => Some('…'),
+        "ndash" => Some('–'),
+        "mdash" => Some('—'),
+        "lsquo" => Some('‘'),
+        "rsquo" => Some('’'),
+        "sbquo" => Some('‚'),
+        "ldquo" => Some('“'),
+        "rdquo" => Some('”'),
+        "bdquo" => Some('„'),
+        "bull" => Some('•'),
+        "euro" => Some('€'),
+        "trade" => Some('™'),
+        _ if LATIN1.contains(&name) => LATIN1
+            .iter()
+            .position(|&n| n == name)
+            .and_then(|i| char::from_u32(0xA0 + i as u32)),
         _ => name
             .strip_prefix("#x")
             .or_else(|| name.strip_prefix("#X"))
@@ -439,6 +474,13 @@ mod tests {
         assert_eq!(html_to_text("<p>unclosed <b"), "unclosed");
         // Double-encoded stays single-decoded.
         assert_eq!(html_to_text("&amp;lt;"), "&lt;");
+        // Norwegian as HTML mail spells it, and a little typography.
+        assert_eq!(
+            html_to_text(
+                "bl&aring;b&aelig;r p&aring; &Oslash;ya &ndash; &laquo;s&aring;&raquo;&hellip; &yuml;&iexcl;"
+            ),
+            "blåbær på Øya – «så»… ÿ¡"
+        );
     }
 
     #[test]

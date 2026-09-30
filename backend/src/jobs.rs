@@ -6,9 +6,12 @@
 //! Jev or Postmark. A finished job is deleted; one out of attempts keeps its
 //! row with `failed_at` and `last_error` for whoever investigates.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
+use tokio::sync::{Semaphore, watch};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -40,12 +43,54 @@ pub async fn enqueue(
     kind: &str,
     subject_id: Option<Uuid>,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO jobs (workspace_id, kind, subject_id) VALUES ($1, $2, $3)")
-        .bind(workspace_id)
-        .bind(kind)
-        .bind(subject_id)
-        .execute(&mut **tx)
-        .await?;
+    enqueue_at(tx, workspace_id, kind, subject_id, None).await
+}
+
+/// As `enqueue`, due at `run_at` instead of now: a reply's undo window, a
+/// snooze's end (spec 006 §25, §34).
+pub async fn enqueue_at(
+    tx: &mut Transaction<'static, Postgres>,
+    workspace_id: Uuid,
+    kind: &str,
+    subject_id: Option<Uuid>,
+    run_at: Option<DateTime<Utc>>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO jobs (workspace_id, kind, subject_id, run_at) VALUES ($1, $2, $3, coalesce($4, now()))",
+    )
+    .bind(workspace_id)
+    .bind(kind)
+    .bind(subject_id)
+    .bind(run_at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// A job about a HubSpot object (spec 007), due in `delay_secs`. One for the
+/// same object that has not started yet absorbs it (§18).
+pub async fn enqueue_object(
+    tx: &mut Transaction<'static, Postgres>,
+    workspace_id: Uuid,
+    kind: &str,
+    subject_id: Option<Uuid>,
+    object_ref: &str,
+    delay_secs: f64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO jobs (workspace_id, kind, subject_id, object_ref, run_at)
+         VALUES ($1, $2, $3, $4, now() + $5 * interval '1 second')
+         ON CONFLICT (workspace_id, kind, object_ref)
+             WHERE object_ref IS NOT NULL AND attempts = 0 AND failed_at IS NULL
+         DO NOTHING",
+    )
+    .bind(workspace_id)
+    .bind(kind)
+    .bind(subject_id)
+    .bind(object_ref)
+    .bind(delay_secs)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
@@ -55,6 +100,7 @@ pub struct Job {
     pub workspace_id: Uuid,
     pub kind: String,
     pub subject_id: Option<Uuid>,
+    pub object_ref: Option<String>,
     pub attempts: i32,
 }
 
@@ -64,7 +110,7 @@ async fn claim(st: &AppState) -> Result<Option<Job>, sqlx::Error> {
         "UPDATE jobs SET run_at = now() + interval '5 minutes', attempts = attempts + 1
          WHERE id = (SELECT id FROM jobs WHERE failed_at IS NULL AND run_at <= now()
                      ORDER BY run_at LIMIT 1 FOR UPDATE SKIP LOCKED)
-         RETURNING id, workspace_id, kind, subject_id, attempts",
+         RETURNING id, workspace_id, kind, subject_id, object_ref, attempts",
     )
     .fetch_optional(&st.db)
     .await
@@ -74,11 +120,21 @@ async fn dispatch(st: &AppState, job: &Job) -> JobResult {
     let ws = job.workspace_id;
     let id = job.subject_id;
     let subject = || id.ok_or_else(|| JobError::Fail("job without subject".into()));
+    let object = || {
+        job.object_ref
+            .as_deref()
+            .ok_or_else(|| JobError::Fail("job without object".into()))
+    };
     match job.kind.as_str() {
         "suggest" => crate::copilot::suggest_job(st, ws, subject()?).await,
         "categorize" => crate::categories::categorize_job(st, ws, subject()?).await,
         "send" => crate::mail::send_job(st, ws, subject()?).await,
+        "wake" => crate::tickets::wake_job(st, ws, subject()?).await,
         "seats" => crate::billing::seats_job(st, ws).await,
+        "hubspotImport" => crate::hubspot::import_job(st, ws, subject()?, object()?).await,
+        "hubspotCheck" => crate::hubspot::check_job(st, ws, subject()?).await,
+        "hubspotTicket" => crate::hubspot::ticket_job(st, ws, object()?).await,
+        "hubspotThread" => crate::hubspot::thread_job(st, ws, object()?).await,
         other => Err(JobError::Fail(format!("unknown job kind {other}"))),
     }
 }
@@ -90,7 +146,10 @@ async fn give_up(st: &AppState, job: &Job, error: &str) {
     let result = match job.kind.as_str() {
         "suggest" => crate::copilot::suggest_gave_up(st, ws, id).await,
         "send" => crate::mail::send_gave_up(st, ws, id, error).await,
-        _ => Ok(()), // categorize: stays uncategorised (spec 004 §10); seats: logged
+        // categorize: stays uncategorised (spec 004 §10); seats: logged; wake:
+        // back in its views at its time anyway (they compare with now), just
+        // not moved to the top.
+        _ => Ok(()),
     };
     if let Err(e) = result {
         tracing::error!(job = job.id, "give_up: {e}");
@@ -148,27 +207,62 @@ pub async fn run_due(st: &AppState) -> usize {
 
 /// The loop in the web process. Polls once a second when idle; the sidebar
 /// polls every 2 seconds (spec 003 §8), so LISTEN/NOTIFY would buy nothing.
-pub async fn worker(st: AppState) {
-    let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(CONCURRENCY));
+///
+/// When `stop` turns true it claims nothing more and returns once the jobs
+/// already running have finished: a `send` cut off after Postmark accepted the
+/// reply would run again after its lease and send the reply twice.
+pub async fn worker(st: AppState, mut stop: watch::Receiver<bool>) {
+    let slots = Arc::new(Semaphore::new(CONCURRENCY));
     loop {
-        let permit = slots.clone().acquire_owned().await.expect("semaphore");
-        match claim(&st).await {
+        let permit = tokio::select! {
+            biased;
+            _ = stop.wait_for(|s| *s) => break,
+            p = slots.clone().acquire_owned() => p.expect("semaphore"),
+        };
+        let idle = match claim(&st).await {
             Ok(Some(job)) => {
                 let st = st.clone();
                 tokio::spawn(async move {
                     run(&st, job).await;
                     drop(permit);
                 });
+                continue;
             }
-            Ok(None) => {
-                drop(permit);
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
+            Ok(None) => Duration::from_secs(1),
             Err(e) => {
-                drop(permit);
                 tracing::error!("claiming job: {e}");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                Duration::from_secs(5)
             }
+        };
+        drop(permit);
+        tokio::select! {
+            biased;
+            _ = stop.wait_for(|s| *s) => break,
+            _ = tokio::time::sleep(idle) => {}
         }
     }
+    let _ = slots.acquire_many(CONCURRENCY as u32).await;
+}
+
+/// Hourly: setup and reset links a day after they expire, sessions once they can no
+/// longer log anyone in (spec 001 §30). They hold email addresses, and
+/// nothing reads them after that.
+pub async fn housekeeping(st: AppState) {
+    let mut hourly = tokio::time::interval(Duration::from_secs(3600));
+    loop {
+        hourly.tick().await;
+        if let Err(e) = clean(&st.db).await {
+            tracing::error!("housekeeping: {e}");
+        }
+    }
+}
+
+pub async fn clean(db: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM auth_links WHERE expires_at < now() - interval '1 day'")
+        .execute(db)
+        .await?;
+    sqlx::query("DELETE FROM sessions WHERE last_used_at < now() - interval '30 days'")
+        .execute(db)
+        .await?;
+    Ok(())
 }

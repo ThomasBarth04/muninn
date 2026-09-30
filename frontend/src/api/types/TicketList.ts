@@ -3,7 +3,7 @@ import type { Counts } from "./Counts";
 import type { Ticket } from "./Ticket";
 
 /**
- * `GET /api/tickets?view=…`
+ * `GET /api/tickets?view=…&q=…&status=…&sort=…`
  */
 export type TicketList = { tickets: Array<Ticket>, nextCursor: string | null, counts: Counts, 
 /**

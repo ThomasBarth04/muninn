@@ -1,5 +1,6 @@
 ---
-description: Write a feature spec before any code
+description: Write specs/NNN-name.md before any feature code. Use when the user asks to build a new feature, or to change behaviour or an HTTP contract that no Agreed spec covers.
+argument-hint: <feature name>
 ---
 
 Write a spec for: $ARGUMENTS

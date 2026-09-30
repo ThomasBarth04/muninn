@@ -51,6 +51,11 @@ One server is one failure domain. A dead box means restoring to a new one from
 object storage, which is minutes to an hour of downtime, not data loss. High
 availability (a replica) is a later ADR when a customer's contract needs it.
 
+Nobody is on call, so the box is watched from outside: an uptime monitor polls
+`/healthz`, which fails when the database is unreachable, a job has run out of
+attempts, WAL archiving fails, or the daily base backup is overdue. Silence from
+the backup sidecar is an alert, not a hope.
+
 Point-in-time recovery also undoes a bad migration or an accidental `DELETE`,
 which nightly dumps would only partly cover.
 

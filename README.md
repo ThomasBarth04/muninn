@@ -21,10 +21,17 @@ cargo run                                            # API on :3000
 cd frontend && npm install && npm run dev            # SPA on :5173, proxies /api and /hooks
 ```
 
-Without `POSTMARK_SERVER_TOKEN` no mail is sent: magic links are printed in the
-backend log. Sign up at <http://localhost:5173/signup> and open the link from
-the log. Without `JEV_API_KEY` suggestions and categories fail visibly; without
-Stripe keys billing does.
+Create a workspace the way the operator does (spec 001 §1), in `backend/`
+with the same environment:
+
+```sh
+cargo run -- admin create-workspace --name Acme --slug acme --language english --owner frank@acme.com
+```
+
+Without `POSTMARK_SERVER_TOKEN` no mail is sent: setup, reset and invite links
+are printed in the backend log. Open the setup link, choose a password and scan
+the QR code with an authenticator app. Without `JEV_API_KEY` suggestions and
+categories fail visibly; Stripe is switched off during the beta.
 
 Fake an inbound email to a workspace with slug `acme`:
 
@@ -54,23 +61,72 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:55432/postgres cargo te
 ## Production
 
 One Hetzner Cloud server in the EU running `deploy/compose.yaml`: the app,
-Postgres with `wal-g`, a `wal-g` backup sidecar and Caddy (ADR 0008).
+Postgres with `wal-g`, a `wal-g` backup sidecar and Caddy (ADR 0008). CI builds
+the app image from `main` and publishes it to
+`ghcr.io/thomasbarth04/muninn` (`:latest` and `:<git sha>`).
 
-1. `cp deploy/.env.example deploy/.env` and fill it in (URL-safe passwords).
-2. DNS: an A record for `DOMAIN` → the server; an MX record for the inbound
-   domain (`in.muninn.io`) → `inbound.postmarkapp.com`.
-3. Postmark: inbound webhook
+1. The server: a Hetzner Cloud Firewall that allows only 22/tcp, 80/tcp,
+   443/tcp and 443/udp; SSH with keys only (`PasswordAuthentication no`);
+   `unattended-upgrades` on; Docker from Docker's apt repository.
+2. `cp deploy/.env.example deploy/.env` and fill it in (URL-safe passwords).
+3. DNS: an A record for `DOMAIN` → the server; an MX record for the inbound
+   domain (`in.muninn.io`) → `inbound.postmarkapp.com`; a DMARC record
+   (`_dmarc`, starting at `v=DMARC1; p=none; rua=mailto:…`) for `muninn.io` and
+   `in.muninn.io`.
+4. Postmark: inbound webhook
    `https://postmark:<POSTMARK_INBOUND_PASSWORD>@<DOMAIN>/hooks/postmark/inbound`
    on the inbound domain; three outbound message streams — system mail
-   (`POSTMARK_SYSTEM_STREAM`), paying customers and trials (ADR 0009) — and the
-   sending domain for `MAIL_FROM` verified.
-4. Stripe: a per-seat monthly price (`STRIPE_PRICE_ID`) and a webhook to
-   `https://<DOMAIN>/hooks/stripe` for `checkout.session.completed`,
-   `customer.subscription.updated` and `customer.subscription.deleted`.
-5. `docker compose -f deploy/compose.yaml up -d --build`. The app runs
-   migrations as `muninn_owner` on start and serves as `muninn_app`.
+   (`POSTMARK_SYSTEM_STREAM`), paying customers and trials (ADR 0009). Verify
+   **two** sending domains (DKIM and Return-Path): the one in `MAIL_FROM`, and
+   the inbound domain itself — replies go out as
+   `<slug>+<token>@in.muninn.io` (ADR 0005), and Postmark refuses them until
+   `in.muninn.io` is verified.
+5. Stripe: nothing during the beta — leave the `STRIPE_*` keys empty; seats
+   are invoiced by hand (spec 001 §18). When it comes back: a per-seat monthly
+   price (`STRIPE_PRICE_ID`) and a webhook to `https://<DOMAIN>/hooks/stripe`
+   for `checkout.session.completed`, `customer.subscription.updated` and
+   `customer.subscription.deleted`.
+6. Deploy: `docker login ghcr.io` (a token with `read:packages`, unless the
+   package is public), then
+   `docker compose -f deploy/compose.yaml pull app && docker compose -f deploy/compose.yaml up -d`.
+   The app runs migrations as `muninn_owner` on start and serves as
+   `muninn_app`. On `SIGTERM` it finishes running requests and jobs (up to a
+   minute) before it exits. To roll back, set `MUNINN_TAG` in `deploy/.env` to
+   an earlier commit's sha and run the same two commands.
+7. Monitoring: point an uptime monitor (Better Stack, UptimeRobot, …) at
+   `https://<DOMAIN>/healthz` and alert on anything but `200`. It answers
+   `503` with the reason when the database is unreachable, a job ran out of
+   attempts in the last hour (`SELECT * FROM jobs WHERE failed_at IS NOT NULL`),
+   WAL archiving is failing, or no base backup finished in the last 26 hours.
+   Right after the very first start it is `503` until the first base backup
+   is done, a few minutes. Container logs rotate at 5 × 10 MB per service.
+
+Operating the beta (spec 001 §28), from the box:
+
+```sh
+docker compose -f deploy/compose.yaml exec app muninn admin create-workspace --name Acme --slug acme --language english --owner frank@acme.com
+docker compose -f deploy/compose.yaml exec app muninn admin seats --month 2026-10   # for the invoices
+docker compose -f deploy/compose.yaml exec app muninn admin reset-login frank@acme.com  # lost authenticator
+docker compose -f deploy/compose.yaml exec app muninn admin pause acme               # and resume
+```
+
+Filling a new workspace's brain from the team's old support mailbox (spec 005):
+an mbox export (Google Takeout, Thunderbird, Apple Mail, or `readpst` for
+Outlook), copied into the container, imported, and deleted — it is their
+customers' mail.
+
+```sh
+docker compose -f deploy/compose.yaml cp acme-support.mbox app:/tmp/acme.mbox
+docker compose -f deploy/compose.yaml exec app muninn admin import acme /tmp/acme.mbox --team @acme.com
+docker compose -f deploy/compose.yaml exec -u root app rm /tmp/acme.mbox
+```
+
+It prints what it imported and skipped. Running it again imports nothing twice,
+so a stopped import is resumed by running it again. On a laptop, a 470 MB export
+of 23,000 messages took a minute and a half and 40 MB of memory.
 
 Backups: WAL is archived continuously and a base backup is taken daily, 14
 kept. Restore with [`deploy/restore.sh`](deploy/restore.sh) and run the
-[monthly drill](deploy/RESTORE_DRILL.md). A GDPR deletion request is
+[monthly drill](deploy/RESTORE_DRILL.md) — once before the first customer, too.
+A GDPR deletion request is
 [`deploy/delete-workspace.sql`](deploy/delete-workspace.sql), run by hand.

@@ -26,9 +26,6 @@ Rejected:
   knowledge when agents choose to write it.
 - **A separate `cases` table** written at close. A second copy of data that
   already exists, and a sync problem when a ticket is reopened.
-- **Importing history** (from Zendesk or a mailbox export) so a new workspace
-  starts full. The best first impression, and one importer per source. Deferred
-  until trial drop-off shows the empty brain is why.
 - **Stemming per message, or no stemming.** Detecting language per message needs
   a detector and still misses cross-language matches; the `simple` config works
   for every language by matching exact words only, and loses recall everywhere.
@@ -42,8 +39,13 @@ configuration, chosen once at signup from Postgres' built-in stemmers. The
 solution shown for a case is its last agent reply. A reopened ticket leaves the
 brain until it closes again, and is re-indexed then.
 
-New workspaces start empty. The sidebar says how many cases the brain holds, so
-the learning is visible from the first closed ticket.
+A new workspace can start full: the operator imports the team's old support
+mailbox as an mbox export (spec 005), and every solved thread in it becomes a
+closed ticket — in the brain like any other, with no second store. One source
+format, mbox, because every mail system exports it; other help desks' exports
+are later importers. Without an import a workspace starts empty, and the sidebar
+says how many cases the brain holds, so the learning is visible from the first
+closed ticket.
 
 ## Consequences
 
@@ -58,5 +60,8 @@ A workspace's language is fixed: changing it means re-indexing every closed
 ticket, which the MVP does not offer. A mixed-language inbox gets weaker matching
 in the language it did not choose.
 
-A trial workspace sees no copilot value until its first repeat problem, which
-may be days. That is the risk accepted in exchange for building no importer.
+A workspace that is not imported sees no copilot value until its first repeat
+problem, which may be days — why the beta imports every workspace that has a
+mailbox to import. An imported case's solution is the last team reply in the
+mail thread, with its quoted history cut by heuristics (spec 005 §8), so it is
+noisier than one written in Muninn.

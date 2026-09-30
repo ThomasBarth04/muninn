@@ -13,3 +13,8 @@
 .env.local
 *.local
 deploy/.env
+
+# Claude Code: personal settings (JEV_API_KEY lives here) and the Jev hook log
+.claude/settings.local.json
+.claude/jev-hooks.log
+__pycache__/

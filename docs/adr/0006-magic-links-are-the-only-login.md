@@ -4,7 +4,7 @@ Date: 2026-09-29
 
 ## Status
 
-Proposed
+Superseded by 0011
 
 ## Context
 

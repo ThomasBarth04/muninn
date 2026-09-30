@@ -1,16 +1,34 @@
 // Settings: profile, team and billing (spec 001), sending domain (spec 002),
-// categories (spec 004). Owner-only controls are hidden from agents (spec 001 §17).
+// categories (spec 004), snippets and keyboard shortcuts (spec 006), HubSpot
+// (spec 007). Owner-only controls are hidden from agents (spec 001 §17).
 
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useParams } from '@tanstack/react-router'
-import { api, errorCode, formatDate, useAgents, useCategories, useMe } from './client'
+import { Link, useParams, useSearch } from '@tanstack/react-router'
+import {
+  ago,
+  api,
+  errorCode,
+  formatDate,
+  setShortcutsOn,
+  shortcutsOn,
+  useAgents,
+  useCategories,
+  useHubspot,
+  useMe,
+  useSnippets,
+} from './client'
 import { CopyButton } from './auth'
 import type { Category } from './api/types/Category'
 import type { NewCategory } from './api/types/NewCategory'
 import type { PatchCategory } from './api/types/PatchCategory'
 import type { Me } from './api/types/Me'
 import type { SendingDomain } from './api/types/SendingDomain'
+import type { Snippet } from './api/types/Snippet'
+import type { HubspotConnection } from './api/types/HubspotConnection'
+import type { HubspotPipeline } from './api/types/HubspotPipeline'
+import type { HubspotStatus } from './api/types/HubspotStatus'
+import type { SetPipelines } from './api/types/SetPipelines'
 import type { UrlResponse } from './api/types/UrlResponse'
 
 const SECTIONS = [
@@ -19,18 +37,23 @@ const SECTIONS = [
   { section: 'billing', label: 'Billing' },
   { section: 'sending', label: 'Sending domain' },
   { section: 'categories', label: 'Categories' },
+  { section: 'snippets', label: 'Snippets' },
+  { section: 'hubspot', label: 'HubSpot' },
 ] as const
 
 export function Settings() {
   const { section = 'profile' } = useParams({ strict: false })
   const me = useMe()
+  // HubSpot only when the server has the app (spec 007 §1).
+  const hubspot = useHubspot()
   if (!me.data) return null
   const isOwner = me.data.agent.role === 'owner'
+  const sections = SECTIONS.filter((s) => s.section !== 'hubspot' || hubspot.data)
   return (
     <div className="settings">
       <nav className="views">
         <h2>Settings</h2>
-        {SECTIONS.map((s) => (
+        {sections.map((s) => (
           <Link key={s.section} to="/settings/$section" params={{ section: s.section }} className={s.section === section ? 'active' : ''}>
             {s.label}
           </Link>
@@ -42,6 +65,8 @@ export function Settings() {
         {section === 'billing' && <BillingSection isOwner={isOwner} />}
         {section === 'sending' && <Sending isOwner={isOwner} />}
         {section === 'categories' && <Categories isOwner={isOwner} />}
+        {section === 'snippets' && <Snippets />}
+        {section === 'hubspot' && hubspot.data && <HubSpot isOwner={isOwner} status={hubspot.data} />}
       </div>
     </div>
   )
@@ -81,7 +106,89 @@ function Profile({ me }: { me: Me }) {
       <div className="address">
         <code>{me.workspace.inboundAddress}</code> <CopyButton text={me.workspace.inboundAddress} />
       </div>
+      <ChangePassword />
+      <KeyboardShortcuts />
     </section>
+  )
+}
+
+// Spec 006 §41: on this device only. Off leaves Ctrl/⌘ combinations working (WCAG 2.1.4).
+function KeyboardShortcuts() {
+  const [on, setOn] = useState(shortcutsOn)
+  const set = (value: boolean) => {
+    setShortcutsOn(value)
+    setOn(value)
+  }
+  return (
+    <fieldset className="stack plain-fieldset">
+      <h3>Keyboard shortcuts</h3>
+      <div className="row-buttons" role="radiogroup" aria-label="Keyboard shortcuts">
+        <label className="inline-check">
+          <input type="radio" name="shortcuts" checked={on} onChange={() => set(true)} /> On
+        </label>
+        <label className="inline-check">
+          <input type="radio" name="shortcuts" checked={!on} onChange={() => set(false)} /> Off
+        </label>
+      </div>
+      <span className="hint">
+        Single-key shortcuts like j, k and e. Turn them off if they get in the way of a screen reader; Ctrl/⌘ combinations keep
+        working. Stored on this device. Press ? in the inbox to see them all.
+      </span>
+    </fieldset>
+  )
+}
+
+// Spec 001 §11: this session stays, the others end.
+function ChangePassword() {
+  const [form, setForm] = useState({ currentPassword: '', newPassword: '' })
+  const change = useMutation({
+    mutationFn: () => api.post('/me/password', form),
+    onSuccess: () => setForm({ currentPassword: '', newPassword: '' }),
+  })
+  const error = { wrongPassword: 'Your current password is not right.', invalidPassword: 'Choose a password of 10 to 256 characters.' }[
+    errorCode(change.error) ?? ''
+  ]
+  return (
+    <form
+      className="stack"
+      onSubmit={(e) => {
+        e.preventDefault()
+        change.mutate()
+      }}
+    >
+      <h3>Password</h3>
+      <label>
+        Current password
+        <input
+          type="password"
+          required
+          autoComplete="current-password"
+          value={form.currentPassword}
+          onChange={(e) => setForm((f) => ({ ...f, currentPassword: e.target.value }))}
+        />
+      </label>
+      <label>
+        New password
+        <input
+          type="password"
+          required
+          minLength={10}
+          maxLength={256}
+          autoComplete="new-password"
+          value={form.newPassword}
+          onChange={(e) => setForm((f) => ({ ...f, newPassword: e.target.value }))}
+        />
+        <span className="hint">At least 10 characters. You stay logged in here; other devices are logged out.</span>
+      </label>
+      <div>
+        <button className="primary" disabled={change.isPending}>
+          Change password
+        </button>{' '}
+        {change.isSuccess && <span className="muted">Changed.</span>}
+        {error && <span className="error">{error}</span>}
+        {change.isError && !error && <span className="error">Could not change the password.</span>}
+      </div>
+    </form>
   )
 }
 
@@ -90,6 +197,7 @@ function Team({ isOwner }: { isOwner: boolean }) {
   const agents = useAgents()
   const [email, setEmail] = useState('')
   const [removing, setRemoving] = useState<string | null>(null)
+  const [resetting, setResetting] = useState<string | null>(null)
   const invite = useMutation({
     mutationFn: () => api.post('/invites', { email }),
     onSuccess: () => {
@@ -103,6 +211,11 @@ function Team({ isOwner }: { isOwner: boolean }) {
       setRemoving(null)
       qc.invalidateQueries({ queryKey: ['agents'] })
     },
+  })
+  // Spec 001 §10: a lost authenticator. Both factors cleared, a new setup link.
+  const reset = useMutation({
+    mutationFn: (id: string) => api.post(`/agents/${id}/reset-login`),
+    onSettled: () => setResetting(null),
   })
   const inviteError = { invalidEmail: 'Enter a valid email address.', emailTaken: 'That address is already an agent in a Muninn workspace.' }[
     errorCode(invite.error) ?? ''
@@ -121,7 +234,15 @@ function Team({ isOwner }: { isOwner: boolean }) {
               <td className="right">
                 {isOwner &&
                   a.role !== 'owner' &&
-                  (removing === a.id ? (
+                  (resetting === a.id ? (
+                    <>
+                      Log {a.name} out and email a new setup link?{' '}
+                      <button className="danger" disabled={reset.isPending} onClick={() => reset.mutate(a.id)}>
+                        Reset login
+                      </button>{' '}
+                      <button onClick={() => setResetting(null)}>Cancel</button>
+                    </>
+                  ) : removing === a.id ? (
                     <>
                       Remove {a.name}?{' '}
                       <button className="danger" disabled={remove.isPending} onClick={() => remove.mutate(a.id)}>
@@ -130,7 +251,10 @@ function Team({ isOwner }: { isOwner: boolean }) {
                       <button onClick={() => setRemoving(null)}>Cancel</button>
                     </>
                   ) : (
-                    <button onClick={() => setRemoving(a.id)}>Remove</button>
+                    <>
+                      <button onClick={() => setResetting(a.id)}>Reset login</button>{' '}
+                      <button onClick={() => setRemoving(a.id)}>Remove</button>
+                    </>
                   ))}
               </td>
             </tr>
@@ -162,6 +286,8 @@ function Team({ isOwner }: { isOwner: boolean }) {
             Send invite
           </button>
           {inviteError && <span className="error">{inviteError}</span>}
+          {reset.isSuccess && <span className="muted">Login reset. A new setup link is on its way.</span>}
+          {reset.isError && <span className="error">Could not reset the login.</span>}
           {invite.isError && !inviteError && <span className="error">Could not send the invite.</span>}
         </form>
       )}
@@ -169,49 +295,24 @@ function Team({ isOwner }: { isOwner: boolean }) {
   )
 }
 
-const BILLING_LABELS = {
-  trialing: 'Free trial',
-  trialExpired: 'Trial ended',
-  active: 'Active',
-  pastDue: 'Payment failed — Stripe is retrying',
-  canceled: 'Canceled',
-}
-
+// Spec 001 §18–19: during the beta seats are invoiced by hand, not through Stripe.
 function BillingSection({ isOwner }: { isOwner: boolean }) {
-  // After Stripe Checkout the webhook, not the browser, activates the
-  // workspace (spec 001 §20) — keep re-reading until it lands.
-  const me = useMe(5000)
-  const go = (path: string) => api.post<UrlResponse>(path).then(({ url }) => (location.href = url))
-  const checkout = useMutation({ mutationFn: () => go('/billing/checkout') })
-  const portal = useMutation({ mutationFn: () => go('/billing/portal') })
-  if (!me.data) return null
-  const b = me.data.workspace.billing
-  const subscribed = b.status === 'active' || b.status === 'pastDue'
-
+  const agents = useAgents()
   return (
     <section className="card">
       <h1>Billing</h1>
-      <p>
-        Status: <strong>{BILLING_LABELS[b.status]}</strong>
-        {b.status === 'trialing' && <> · ends {formatDate(b.trialEndsAt)}</>}
-      </p>
-      <p className="muted">Priced per agent per month. Pending invites are not seats.</p>
       {isOwner ? (
-        <div className="row-buttons">
-          {!subscribed && (
-            <button className="primary" disabled={checkout.isPending} onClick={() => checkout.mutate()}>
-              Subscribe
-            </button>
+        <>
+          <p>Invoiced monthly per seat.</p>
+          {agents.data && (
+            <p>
+              <strong>{agents.data.agents.length}</strong> {agents.data.agents.length === 1 ? 'seat' : 'seats'} now. Pending
+              invites are not seats.
+            </p>
           )}
-          {(subscribed || b.status === 'canceled') && (
-            <button disabled={portal.isPending} onClick={() => portal.mutate()}>
-              Manage billing
-            </button>
-          )}
-          {(checkout.isError || portal.isError) && <span className="error">Could not reach Stripe. Try again.</span>}
-        </div>
+        </>
       ) : (
-        <p className="muted">Only the workspace owner manages billing.</p>
+        <p className="muted">Only the workspace owner sees billing.</p>
       )}
     </section>
   )
@@ -438,5 +539,278 @@ function CategoryRow({ c, isOwner }: { c: Category; isOwner: boolean }) {
         )}
       </td>
     </tr>
+  )
+}
+
+// Spec 006 §37–38: any agent adds, edits and deletes them.
+const SNIPPET_ERRORS: Record<string, string> = {
+  invalidName: 'Enter a name of 1 to 60 characters.',
+  invalidText: 'Enter text of 1 to 5,000 characters.',
+}
+
+function Snippets() {
+  const qc = useQueryClient()
+  const snippets = useSnippets()
+  const [editing, setEditing] = useState<Snippet | 'new' | null>(null)
+  return (
+    <section className="card">
+      <h1>Snippets</h1>
+      <p className="muted">
+        Saved text anyone on the team can insert into a reply: type # in the composer, or use the Snippets button.{' '}
+        <code>{'{{contact.firstName}}'}</code>, <code>{'{{contact.name}}'}</code>, <code>{'{{agent.firstName}}'}</code> and{' '}
+        <code>{'{{agent.name}}'}</code> are filled in when inserted.
+      </p>
+      <table>
+        <tbody>
+          {snippets.data?.snippets.map((s) =>
+            editing !== 'new' && editing?.id === s.id ? (
+              <tr key={s.id}>
+                <td colSpan={3}>
+                  <SnippetForm snippet={s} onDone={() => setEditing(null)} />
+                </td>
+              </tr>
+            ) : (
+              <SnippetRow key={s.id} s={s} onEdit={() => setEditing(s)} onDeleted={() => qc.invalidateQueries({ queryKey: ['snippets'] })} />
+            ),
+          )}
+        </tbody>
+      </table>
+      {editing === 'new' ? (
+        <SnippetForm onDone={() => setEditing(null)} />
+      ) : (
+        <button className="primary" onClick={() => setEditing('new')}>
+          Add a snippet
+        </button>
+      )}
+    </section>
+  )
+}
+
+function SnippetRow({ s, onEdit, onDeleted }: { s: Snippet; onEdit: () => void; onDeleted: () => void }) {
+  const [confirm, setConfirm] = useState(false)
+  const remove = useMutation({ mutationFn: () => api.del(`/snippets/${s.id}`), onSuccess: onDeleted })
+  return (
+    <tr>
+      <td>
+        <strong>{s.name}</strong>
+      </td>
+      <td className="muted snippet-text">{s.text}</td>
+      <td className="right nowrap">
+        {confirm ? (
+          <>
+            Delete {s.name}?{' '}
+            <button className="danger" disabled={remove.isPending} onClick={() => remove.mutate()}>
+              Delete
+            </button>{' '}
+            <button onClick={() => setConfirm(false)}>Cancel</button>
+          </>
+        ) : (
+          <>
+            <button onClick={onEdit}>Edit</button> <button onClick={() => setConfirm(true)}>Delete</button>
+          </>
+        )}
+        {remove.isError && <span className="error"> Could not delete it.</span>}
+      </td>
+    </tr>
+  )
+}
+
+function SnippetForm({ snippet, onDone }: { snippet?: Snippet; onDone: () => void }) {
+  const qc = useQueryClient()
+  const [name, setName] = useState(snippet?.name ?? '')
+  const [text, setText] = useState(snippet?.text ?? '')
+  const save = useMutation({
+    mutationFn: () => (snippet ? api.patch(`/snippets/${snippet.id}`, { name, text }) : api.post('/snippets', { name, text })),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['snippets'] })
+      onDone()
+    },
+  })
+  const code = errorCode(save.error)
+  return (
+    <form
+      className="stack"
+      onSubmit={(e) => {
+        e.preventDefault()
+        save.mutate()
+      }}
+    >
+      <label>
+        Name
+        <input required autoFocus maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <label>
+        Text
+        <textarea required rows={6} maxLength={5000} value={text} onChange={(e) => setText(e.target.value)} />
+      </label>
+      <div>
+        <button className="primary" disabled={save.isPending}>
+          Save
+        </button>{' '}
+        <button type="button" onClick={onDone}>
+          Cancel
+        </button>{' '}
+        {code && <span className="error">{SNIPPET_ERRORS[code] ?? 'Could not save.'}</span>}
+      </div>
+    </form>
+  )
+}
+
+// Spec 007: connect HubSpot, pick its pipelines, watch the import, disconnect.
+const CONNECT_ERRORS: Record<string, string> = {
+  expired: 'That link expired — connect again.',
+  denied: 'HubSpot was not given access. Connect again to try once more.',
+  portalTaken: 'This HubSpot account is connected to another Muninn workspace.',
+  alreadyConnected: 'This workspace is already connected to a HubSpot account. Disconnect it first.',
+  upstream: 'HubSpot did not answer. Try again.',
+}
+
+const n = (x: number) => x.toLocaleString()
+
+function HubSpot({ isOwner, status }: { isOwner: boolean; status: HubspotStatus }) {
+  const { error } = useSearch({ strict: false })
+  const qc = useQueryClient()
+  const [confirming, setConfirming] = useState(false)
+  const connect = useMutation({
+    mutationFn: () => api.post<UrlResponse>('/integrations/hubspot/connect'),
+    onSuccess: (r) => window.location.assign(r.url),
+  })
+  const disconnect = useMutation({
+    mutationFn: () => api.del('/integrations/hubspot'),
+    onSuccess: () => {
+      setConfirming(false)
+      qc.invalidateQueries({ queryKey: ['hubspot'] })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+  })
+  const c = status.connection
+  const connectButton = (label: string) => (
+    <button className="primary" disabled={connect.isPending} onClick={() => connect.mutate()}>
+      {label}
+    </button>
+  )
+
+  return (
+    <section className="card">
+      <h1>HubSpot</h1>
+      {error && CONNECT_ERRORS[error] && <p className="error">{CONNECT_ERRORS[error]}</p>}
+      {connect.isError && <p className="error">Could not reach HubSpot. Try again.</p>}
+      {!c ? (
+        <>
+          <p>
+            Answering in HubSpot Help Desk? Connect it and Muninn reads your tickets: the last 12 months come in, and every
+            change after that. Muninn never writes to HubSpot — you keep replying there.
+          </p>
+          {disconnect.isSuccess && (
+            <p className="muted">Disconnected. If Muninn still shows under Connected apps in HubSpot, remove it there.</p>
+          )}
+          {isOwner ? connectButton('Connect HubSpot') : <p className="muted">Only the workspace owner can connect HubSpot.</p>}
+        </>
+      ) : (
+        <>
+          <p>
+            <strong>{c.accountName}</strong> <HubSpotState c={c} />
+          </p>
+          {c.status === 'revoked' && (
+            <p className="error">HubSpot disconnected Muninn. Reconnect the same account, or disconnect.</p>
+          )}
+          {c.status !== 'revoked' && c.lastError && <p className="error">Last attempt failed: {c.lastError}.</p>}
+          {c.skipped > 0 && <p className="muted">{n(c.skipped)} skipped — no customer email.</p>}
+          {isOwner ? (
+            <>
+              {c.status === 'pickPipelines' && <p>Tick the pipelines that are support. Nothing is imported until you save.</p>}
+              <Pipelines key={c.pipelines.map((p) => `${p.id}${p.selected}`).join()} c={c} />
+              <div className="inline">
+                {c.status === 'revoked' && connectButton('Reconnect')}
+                {!confirming ? (
+                  <button onClick={() => setConfirming(true)}>Disconnect</button>
+                ) : (
+                  <>
+                    <span>
+                      Disconnect HubSpot? Closed tickets stay in the brain; open ones are removed from Muninn — they are still in
+                      HubSpot.
+                    </span>
+                    <button className="primary" disabled={disconnect.isPending} onClick={() => disconnect.mutate()}>
+                      Disconnect
+                    </button>
+                    <button onClick={() => setConfirming(false)}>Cancel</button>
+                  </>
+                )}
+                {disconnect.isError && <span className="error">Could not disconnect. Try again.</span>}
+              </div>
+            </>
+          ) : (
+            <p className="muted">
+              Syncing {c.pipelines.filter((p) => p.selected).map((p) => p.label).join(', ') || 'no pipelines yet'}. Only the
+              workspace owner changes this.
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+function HubSpotState({ c }: { c: HubspotConnection }) {
+  if (c.status === 'pickPipelines') return <span className="pill status-new">Connected</span>
+  if (c.status === 'revoked') return <span className="pill status-waitingOnUs">Disconnected</span>
+  if (c.status === 'importing' && c.import)
+    return (
+      <span className="muted">
+        Importing from HubSpot — {n(c.import.done)} of {n(c.import.total)} tickets{' '}
+        <progress max={c.import.total || 1} value={c.import.done} />
+      </span>
+    )
+  return (
+    <span className="muted">
+      Synced — {n(c.tickets)} tickets{c.lastSyncedAt && <>, last change {ago(c.lastSyncedAt)}</>}
+    </span>
+  )
+}
+
+function Pipelines({ c }: { c: HubspotConnection }) {
+  const qc = useQueryClient()
+  const [ticked, setTicked] = useState(() => new Set(c.pipelines.filter((p) => p.selected).map((p) => p.id)))
+  const save = useMutation({
+    mutationFn: () =>
+      api.put<HubspotConnection>('/integrations/hubspot/pipelines', { pipelineIds: [...ticked] } satisfies SetPipelines),
+    onSuccess: (connection) => {
+      qc.setQueryData(['hubspot'], { connection })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+  })
+  const first = c.status === 'pickPipelines'
+  const unticking = !first && c.pipelines.some((p) => p.selected && !ticked.has(p.id))
+  const changed = first || c.pipelines.some((p) => p.selected !== ticked.has(p.id))
+  const toggle = (p: HubspotPipeline) =>
+    setTicked((t) => {
+      const next = new Set(t)
+      if (next.has(p.id)) next.delete(p.id)
+      else next.add(p.id)
+      return next
+    })
+  return (
+    <form
+      className="stack"
+      onSubmit={(e: FormEvent) => {
+        e.preventDefault()
+        save.mutate()
+      }}
+    >
+      <h3>Pipelines</h3>
+      {c.pipelines.map((p) => (
+        <label key={p.id} className="check">
+          <input type="checkbox" checked={ticked.has(p.id)} onChange={() => toggle(p)} /> {p.label}
+        </label>
+      ))}
+      {unticking && <p className="error">Unticking a pipeline removes its tickets from Muninn, closed ones too.</p>}
+      <div>
+        <button className="primary" disabled={save.isPending || !changed || ticked.size === 0}>
+          {first ? 'Start import' : 'Save'}
+        </button>{' '}
+        {ticked.size === 0 && <span className="muted">Tick at least one pipeline.</span>}
+        {save.isError && <span className="error">Could not save. Try again.</span>}
+      </div>
+    </form>
   )
 }

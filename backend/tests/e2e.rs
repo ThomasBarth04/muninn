@@ -1,6 +1,6 @@
-//! The product promise end to end, through the public API only: Frank solves
-//! a problem on Monday, Vetle gets the same problem on Wednesday and the
-//! sidebar shows him Frank's answer.
+//! The product promise end to end, through the public API and the operator's
+//! command that creates the workspace: Frank solves a problem on Monday, Vetle
+//! gets the same problem on Wednesday and the sidebar shows him Frank's answer.
 
 mod common;
 
@@ -63,21 +63,8 @@ async fn a_problem_solved_once_is_solved_for_everyone_after() {
         Some((200, json!({ "answers": answers })))
     });
 
-    // Frank signs up.
-    let mut frank = app.client();
-    let r = frank
-        .post("/api/signup", json!({ "email": "frank@acme.com", "workspaceName": "Acme", "slug": "acme", "language": "english" }))
-        .await;
-    assert_eq!(r.status, 202, "{:?}", r.body);
-    app.wait_for_email("frank@acme.com").await;
-    let token = app.mock.link_token("frank@acme.com");
-    let r = frank.get(&format!("/api/auth/link?token={token}")).await;
-    assert_eq!(r.body["purpose"], "signup");
-    let r = frank
-        .post("/api/auth/link", json!({ "token": token }))
-        .await;
-    assert_eq!(r.status, 200, "{:?}", r.body);
-    assert_eq!(r.body["redirect"], "/onboarding");
+    // The operator creates Acme; Frank sets up his login.
+    let (mut frank, _) = app.owner("acme", "frank@acme.com").await;
     let me = frank.get("/api/me").await.body;
     assert_eq!(me["workspace"]["inboundAddress"], "acme@in.muninn.test");
 
@@ -118,7 +105,8 @@ async fn a_problem_solved_once_is_solved_for_everyone_after() {
         .find(|e| e["To"] == "ola@kunde.no")
         .expect("reply sent");
     assert!(sent["From"].as_str().unwrap().contains("acme+"));
-    assert_eq!(sent["MessageStream"], "trials");
+    // Beta workspaces are active: the customer stream (spec 001 §2).
+    assert_eq!(sent["MessageStream"], "customers");
     let r = frank
         .patch(&format!("/api/tickets/{id}"), json!({ "status": "closed" }))
         .await;
@@ -129,16 +117,7 @@ async fn a_problem_solved_once_is_solved_for_everyone_after() {
         .post("/api/invites", json!({ "email": "vetle@acme.com" }))
         .await;
     assert_eq!(r.status, 201, "{:?}", r.body);
-    app.wait_for_email("vetle@acme.com").await;
-    let mut vetle = app.client();
-    let token = app.mock.link_token("vetle@acme.com");
-    assert_eq!(
-        vetle
-            .post("/api/auth/link", json!({ "token": token }))
-            .await
-            .status,
-        200
-    );
+    let (mut vetle, _) = app.set_up_account("vetle@acme.com").await;
 
     // Wednesday: Kari has the same problem.
     let second = inbound(
@@ -223,15 +202,7 @@ async fn a_problem_solved_once_is_solved_for_everyone_after() {
     assert_eq!(s["brainSize"], 0);
 
     // Another workspace sees none of it.
-    let mut globex = app.client();
-    globex
-        .post("/api/signup", json!({ "email": "boss@globex.com", "workspaceName": "Globex", "slug": "globex", "language": "english" }))
-        .await;
-    app.wait_for_email("boss@globex.com").await;
-    let token = app.mock.link_token("boss@globex.com");
-    globex
-        .post("/api/auth/link", json!({ "token": token }))
-        .await;
+    let (mut globex, _) = app.owner("globex", "boss@globex.com").await;
     assert_eq!(globex.get(&format!("/api/tickets/{id}")).await.status, 404);
     assert_eq!(
         globex.get("/api/tickets?view=open").await.body["counts"]["open"],

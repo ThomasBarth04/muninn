@@ -3,4 +3,8 @@
 /**
  * `PATCH /api/tickets/{id}` — any subset; `null` clears.
  */
-export type PatchTicket = { status?: 'new' | 'waitingOnContact' | 'waitingOnUs' | 'closed', ownerId?: string | null, priority?: 'low' | 'medium' | 'high' | 'urgent' | null, categoryId?: string | null, };
+export type PatchTicket = { status?: 'new' | 'waitingOnContact' | 'waitingOnUs' | 'closed', ownerId?: string | null, priority?: 'low' | 'medium' | 'high' | 'urgent' | null, categoryId?: string | null, 
+/**
+ * `null` unsnoozes (spec 006 §25–27).
+ */
+snoozedUntil?: string | null, };

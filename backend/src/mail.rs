@@ -90,9 +90,9 @@ pub async fn send(st: &AppState, email: &Email<'_>) -> Result<(), SendError> {
     }
 }
 
-/// System mail — magic links and invites — from Muninn itself, on its own stream.
+/// System mail — setup, reset and invite links — from Muninn itself, on its own stream.
 /// Fire and forget: the caller answers at once and the timing of the answer
-/// does not reveal whether a mail was sent (spec 001 §4, §9).
+/// does not reveal whether a mail was sent (spec 001 §9).
 pub fn send_system(st: &AppState, to: String, subject: String, text: String) {
     let st = st.clone();
     tokio::spawn(async move {

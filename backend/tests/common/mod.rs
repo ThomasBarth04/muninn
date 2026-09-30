@@ -1,12 +1,13 @@
 //! Test harness: a fresh database per test, migrated as the owner role and
 //! used as the app role exactly as in production (ADR 0003), the real router
-//! on a random port, and one mock server standing in for Postmark, Jev and
-//! Stripe.
+//! on a random port, and one mock server standing in for Postmark, Jev,
+//! Stripe and HubSpot.
 //!
 //! Needs `TEST_DATABASE_URL`, a superuser URL, e.g.
 //! `postgres://postgres:postgres@localhost:55432/postgres`
 //! (`docker run -d -p 55432:5432 -e POSTGRES_PASSWORD=postgres postgres:17-alpine`).
-//! Without it every integration test prints a notice and passes.
+//! Without it every integration test prints a notice and passes — except in
+//! CI, where a missing database is a failure, not a pass.
 #![allow(dead_code)]
 
 use std::str::FromStr;
@@ -20,6 +21,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 pub const INBOUND_PASSWORD: &str = "inbound-secret";
 pub const STRIPE_WEBHOOK_SECRET: &str = "whsec_test";
+pub const HUBSPOT_CLIENT_SECRET: &str = "hs-secret";
 
 /// One request the app made to an external service.
 #[derive(Clone, Debug)]
@@ -84,7 +86,11 @@ async fn mock_handler(
     body: String,
 ) -> (StatusCode, axum::Json<Value>) {
     let body = serde_json::from_str(&body).unwrap_or(Value::String(body));
-    let path = uri.path().to_string();
+    // With the query: HubSpot's API says what it wants there.
+    let path = uri
+        .path_and_query()
+        .map_or(uri.path(), |p| p.as_str())
+        .to_string();
     mock.calls.lock().unwrap().push(Call {
         method: method.to_string(),
         path: path.clone(),
@@ -114,8 +120,14 @@ pub struct TestApp {
     pub mock: Mock,
 }
 
-pub async fn spawn() -> Option<TestApp> {
+/// A fresh, empty database: owned by the owner role, migrations not run.
+/// `None` without `TEST_DATABASE_URL`, as `spawn`.
+pub async fn database() -> Option<(PgPool, PgConnectOptions)> {
     let Ok(admin_url) = std::env::var("TEST_DATABASE_URL") else {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "TEST_DATABASE_URL unset in CI"
+        );
         eprintln!("TEST_DATABASE_URL unset — skipping integration test");
         return None;
     };
@@ -154,6 +166,11 @@ pub async fn spawn() -> Option<TestApp> {
         .connect_with(base.clone().username("muninn_owner").password("muninn"))
         .await
         .expect("owner db");
+    Some((owner, base))
+}
+
+pub async fn spawn() -> Option<TestApp> {
+    let (owner, base) = database().await?;
     sqlx::migrate!().run(&owner).await.expect("migrations");
     let db = PgPoolOptions::new()
         .max_connections(5)
@@ -186,10 +203,14 @@ pub async fn spawn() -> Option<TestApp> {
         postmark_inbound_password: INBOUND_PASSWORD.into(),
         jev_api_url: mock_url.clone(),
         jev_api_key: Some("jev-key".into()),
-        stripe_api_url: mock_url,
+        stripe_api_url: mock_url.clone(),
         stripe_secret_key: Some("sk_test".into()),
         stripe_webhook_secret: Some(STRIPE_WEBHOOK_SECRET.into()),
         stripe_price_id: Some("price_seat".into()),
+        hubspot_api_url: mock_url.clone(),
+        hubspot_app_url: "https://app.hubspot.test".into(),
+        hubspot_client_id: Some("hs-client".into()),
+        hubspot_client_secret: Some(HUBSPOT_CLIENT_SECRET.into()),
     };
     let st = AppState::new(db, cfg);
     let app = muninn::router(st.clone());
@@ -208,11 +229,21 @@ impl TestApp {
         Client {
             base: self.url.clone(),
             cookie: None,
-            http: reqwest::Client::new(),
+            // Redirects are answers to look at (the HubSpot callback), not to follow.
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
         }
     }
 
+    /// Every job due now. A reply's send job first waits out its 10-second
+    /// undo window (spec 006 §34); tests skip the wait unless they test it.
     pub async fn run_jobs(&self) -> usize {
+        sqlx::query("UPDATE jobs SET run_at = now() WHERE kind = 'send' AND attempts = 0")
+            .execute(&self.owner)
+            .await
+            .unwrap();
         muninn::jobs::run_due(&self.st).await
     }
 
@@ -230,6 +261,60 @@ impl TestApp {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("no email to {to}");
+    }
+}
+
+/// An authenticator app: the code for `secret` (base32, as the setup page
+/// shows it), `steps` 30-second steps from now. A code works once, so a
+/// second login in the same half-minute uses `steps = 1`.
+pub fn code(secret: &str, steps: i64) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let (mut bits, mut n, mut bytes) = (0u32, 0u32, vec![]);
+    for c in secret.bytes() {
+        n = n << 5 | ALPHABET.iter().position(|&a| a == c).expect("base32") as u32;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((n >> bits) as u8);
+        }
+    }
+    let step = chrono::Utc::now().timestamp() / 30 + steps;
+    format!("{:06}", muninn::credentials::code_at(&bytes, step))
+}
+
+pub const PASSWORD: &str = "correct horse battery";
+
+impl TestApp {
+    /// Follow the newest link emailed to `email` and set a password and an
+    /// authenticator: a logged-in browser and the authenticator's secret.
+    pub async fn set_up_account(&self, email: &str) -> (Client, String) {
+        self.wait_for_email(email).await;
+        let token = self.mock.link_token(email);
+        let mut c = self.client();
+        let info = c.get(&format!("/api/auth/link?token={token}")).await;
+        assert_eq!(info.status, 200, "{:?}", info.body);
+        let secret = info.body["totp"]["secret"]
+            .as_str()
+            .expect("an authenticator to set up")
+            .to_string();
+        let r = c
+            .post(
+                "/api/auth/link",
+                json!({ "token": token, "password": PASSWORD, "code": code(&secret, 0) }),
+            )
+            .await;
+        assert_eq!(r.status, 200, "{:?}", r.body);
+        (c, secret)
+    }
+
+    /// A workspace created the way the operator does (spec 001 §1–2), its
+    /// owner logged in.
+    pub async fn owner(&self, slug: &str, email: &str) -> (Client, String) {
+        let name = format!("{}{}", slug[..1].to_uppercase(), &slug[1..]);
+        muninn::admin::create_workspace(&self.st, &name, slug, "english", email)
+            .await
+            .expect("workspace created");
+        self.set_up_account(email).await
     }
 }
 
@@ -296,4 +381,93 @@ impl Client {
     pub async fn delete(&mut self, path: &str) -> Res {
         self.req("DELETE", path, None).await
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tickets: a workspace arranged directly, and mail in through the webhook.
+// ---------------------------------------------------------------------------
+
+pub const DOMAIN: &str = "in.muninn.test";
+
+/// A workspace and a logged-in agent, arranged directly (spec 001's flow has
+/// its own tests).
+pub async fn workspace(
+    app: &TestApp,
+    slug: &str,
+    email: &str,
+    role: &str,
+) -> (uuid::Uuid, uuid::Uuid, Client) {
+    let ws: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO workspaces (id, name, slug, language, trial_ends_at)
+         VALUES (gen_random_uuid(), initcap($1), $1, 'english', now() + interval '14 days') RETURNING id",
+    )
+    .bind(slug)
+    .fetch_one(&app.owner)
+    .await
+    .unwrap();
+    let agent = agent(app, ws, email, role).await;
+    let client = login(app, ws, agent).await;
+    (ws, agent, client)
+}
+
+pub async fn agent(app: &TestApp, ws: uuid::Uuid, email: &str, role: &str) -> uuid::Uuid {
+    sqlx::query_scalar("INSERT INTO agents (workspace_id, email, name, role) VALUES ($1, $2, split_part($2, '@', 1), $3) RETURNING id")
+        .bind(ws)
+        .bind(email)
+        .bind(role)
+        .fetch_one(&app.owner)
+        .await
+        .unwrap()
+}
+
+pub async fn login(app: &TestApp, ws: uuid::Uuid, agent: uuid::Uuid) -> Client {
+    let token = muninn::session::new_token();
+    sqlx::query("INSERT INTO sessions (token_hash, workspace_id, agent_id) VALUES ($1, $2, $3)")
+        .bind(muninn::session::hash_token(&token))
+        .bind(ws)
+        .bind(agent)
+        .execute(&app.owner)
+        .await
+        .unwrap();
+    let mut client = app.client();
+    client.cookie = Some(format!("muninn_session={token}"));
+    client
+}
+
+/// A Postmark inbound payload from Ola to `to`.
+pub fn mail(to: &str, subject: &str, text: &str, message_id: &str) -> Value {
+    json!({
+        "OriginalRecipient": to,
+        "ToFull": [{ "Email": to, "Name": "", "MailboxHash": "" }],
+        "CcFull": [],
+        "FromFull": { "Email": "Ola@Kunde.no", "Name": "Ola Nordmann" },
+        "Subject": subject,
+        "MailboxHash": "",
+        "TextBody": text,
+        "HtmlBody": "",
+        "StrippedTextReply": "",
+        "Headers": [{ "Name": "Message-ID", "Value": format!("<{message_id}>") }],
+        "Attachments": [],
+    })
+}
+
+pub async fn deliver(app: &TestApp, payload: &Value) -> u16 {
+    deliver_as(app, payload, Some(INBOUND_PASSWORD)).await
+}
+
+pub async fn deliver_as(app: &TestApp, payload: &Value, password: Option<&str>) -> u16 {
+    let mut req = reqwest::Client::new()
+        .post(format!("{}/hooks/postmark/inbound", app.url))
+        .json(payload);
+    if let Some(p) = password {
+        req = req.basic_auth("postmark", Some(p));
+    }
+    req.send().await.unwrap().status().as_u16()
+}
+
+pub async fn count(app: &TestApp, sql: &str) -> i64 {
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_string()))
+        .fetch_one(&app.owner)
+        .await
+        .unwrap()
 }

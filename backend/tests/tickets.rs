@@ -3,90 +3,9 @@
 
 mod common;
 
-use common::{Client, INBOUND_PASSWORD, TestApp};
-use muninn::session::{hash_token, new_token};
+use common::{DOMAIN, TestApp, agent, count, deliver, deliver_as, login, mail, workspace};
 use serde_json::{Value, json};
 use uuid::Uuid;
-
-const DOMAIN: &str = "in.muninn.test";
-
-/// A workspace and a logged-in agent, arranged directly (spec 001's flow has
-/// its own tests).
-async fn workspace(app: &TestApp, slug: &str, email: &str, role: &str) -> (Uuid, Uuid, Client) {
-    let ws: Uuid = sqlx::query_scalar(
-        "INSERT INTO workspaces (id, name, slug, language, trial_ends_at)
-         VALUES (gen_random_uuid(), initcap($1), $1, 'english', now() + interval '14 days') RETURNING id",
-    )
-    .bind(slug)
-    .fetch_one(&app.owner)
-    .await
-    .unwrap();
-    let agent = agent(app, ws, email, role).await;
-    let client = login(app, ws, agent).await;
-    (ws, agent, client)
-}
-
-async fn agent(app: &TestApp, ws: Uuid, email: &str, role: &str) -> Uuid {
-    sqlx::query_scalar("INSERT INTO agents (workspace_id, email, name, role) VALUES ($1, $2, split_part($2, '@', 1), $3) RETURNING id")
-        .bind(ws)
-        .bind(email)
-        .bind(role)
-        .fetch_one(&app.owner)
-        .await
-        .unwrap()
-}
-
-async fn login(app: &TestApp, ws: Uuid, agent: Uuid) -> Client {
-    let token = new_token();
-    sqlx::query("INSERT INTO sessions (token_hash, workspace_id, agent_id) VALUES ($1, $2, $3)")
-        .bind(hash_token(&token))
-        .bind(ws)
-        .bind(agent)
-        .execute(&app.owner)
-        .await
-        .unwrap();
-    let mut client = app.client();
-    client.cookie = Some(format!("muninn_session={token}"));
-    client
-}
-
-/// A Postmark inbound payload from Ola to `to`.
-fn mail(to: &str, subject: &str, text: &str, message_id: &str) -> Value {
-    json!({
-        "OriginalRecipient": to,
-        "ToFull": [{ "Email": to, "Name": "", "MailboxHash": "" }],
-        "CcFull": [],
-        "FromFull": { "Email": "Ola@Kunde.no", "Name": "Ola Nordmann" },
-        "Subject": subject,
-        "MailboxHash": "",
-        "TextBody": text,
-        "HtmlBody": "",
-        "StrippedTextReply": "",
-        "Headers": [{ "Name": "Message-ID", "Value": format!("<{message_id}>") }],
-        "Attachments": [],
-    })
-}
-
-async fn deliver(app: &TestApp, payload: &Value) -> u16 {
-    deliver_as(app, payload, Some(INBOUND_PASSWORD)).await
-}
-
-async fn deliver_as(app: &TestApp, payload: &Value, password: Option<&str>) -> u16 {
-    let mut req = reqwest::Client::new()
-        .post(format!("{}/hooks/postmark/inbound", app.url))
-        .json(payload);
-    if let Some(p) = password {
-        req = req.basic_auth("postmark", Some(p));
-    }
-    req.send().await.unwrap().status().as_u16()
-}
-
-async fn count(app: &TestApp, sql: &str) -> i64 {
-    sqlx::query_scalar(sqlx::AssertSqlSafe(sql.to_string()))
-        .fetch_one(&app.owner)
-        .await
-        .unwrap()
-}
 
 #[tokio::test]
 async fn inbound_is_authenticated_and_routed() {
@@ -134,7 +53,7 @@ async fn inbound_is_authenticated_and_routed() {
     assert_eq!(list.body["hasTickets"], true);
     assert_eq!(
         list.body["counts"],
-        json!({ "unassigned": 2, "mine": 0, "open": 2 })
+        json!({ "unassigned": 2, "mine": 0, "open": 2, "drafts": 0, "views": {} })
     );
     let newest = &list.body["tickets"][0];
     assert_eq!(newest["subject"], "(no subject)");

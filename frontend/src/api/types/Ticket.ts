@@ -2,7 +2,31 @@
 import type { AgentRef } from "./AgentRef";
 import type { CategorySuggestion } from "./CategorySuggestion";
 import type { Contact } from "./Contact";
+import type { HubspotLink } from "./HubspotLink";
 import type { LastMessage } from "./LastMessage";
 import type { TicketCategory } from "./TicketCategory";
+import type { Viewer } from "./Viewer";
 
-export type Ticket = { id: string, subject: string, status: 'new' | 'waitingOnContact' | 'waitingOnUs' | 'closed', priority: 'low' | 'medium' | 'high' | 'urgent' | null, owner: AgentRef | null, contact: Contact, category: TicketCategory | null, categorySuggestions: Array<CategorySuggestion>, seenBefore: boolean, lastMessage: LastMessage, createdAt: string, lastActivityAt: string, };
+export type Ticket = { id: string, 
+/**
+ * Per workspace, from 1 in order of arrival (spec 006 §1).
+ */
+number: number, subject: string, status: 'new' | 'waitingOnContact' | 'waitingOnUs' | 'closed', priority: 'low' | 'medium' | 'high' | 'urgent' | null, owner: AgentRef | null, contact: Contact, category: TicketCategory | null, categorySuggestions: Array<CategorySuggestion>, seenBefore: boolean, lastMessage: LastMessage, 
+/**
+ * The newest message matching `q`, its snippet around the match; null
+ * without `q` or when only the subject, number or contact matched.
+ */
+searchMatch: LastMessage | null, createdAt: string, lastActivityAt: string, 
+/**
+ * `unread`, `snoozeEnded` and `viewers` are relative to the agent asking.
+ */
+unread: boolean, 
+/**
+ * In `new` and `waitingOnUs`: the first customer message after the last
+ * agent reply, or when the status was set if earlier. Else null (spec 006 §16).
+ */
+waitingSince: string | null, snoozedUntil: string | null, snoozeEnded: boolean, viewers: Array<Viewer>, 
+/**
+ * Null for a ticket that did not come from HubSpot (spec 007).
+ */
+hubspot: HubspotLink | null, };

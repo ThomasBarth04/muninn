@@ -1,34 +1,12 @@
-// Spec 001: signup, login, the magic-link page, onboarding.
+// Spec 001: login with a password and an authenticator (ADR 0011), the
+// setup and reset link page, the beta note, onboarding.
 
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouter, useSearch } from '@tanstack/react-router'
-import { ApiError, api, errorCode, useMe } from './client'
+import { ApiError, BETA_CONTACT, api, errorCode, useHubspot, useMe } from './client'
 import type { AuthLinkInfo } from './api/types/AuthLinkInfo'
-import type { ConsumeLinkResponse } from './api/types/ConsumeLinkResponse'
-import type { SignupRequest } from './api/types/SignupRequest'
-
-// Postgres' built-in stemmers (ADR 0010); `simple` matches exact words only.
-const LANGUAGES = [
-  'english', 'danish', 'dutch', 'finnish', 'french', 'german', 'hungarian', 'italian', 'norwegian',
-  'portuguese', 'romanian', 'russian', 'spanish', 'swedish', 'turkish',
-]
-
-// ponytail: display-only; after signup the real address comes from /api/me.
-const INBOUND_DOMAIN = 'in.muninn.io'
-
-export function slugify(name: string) {
-  return name
-    .toLowerCase()
-    .replace(/æ/g, 'ae')
-    .replace(/ø/g, 'o')
-    .replace(/ß/g, 'ss')
-    .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 32)
-}
+import type { LoginResponse } from './api/types/LoginResponse'
 
 function Page({ children }: { children: ReactNode }) {
   return (
@@ -39,98 +17,14 @@ function Page({ children }: { children: ReactNode }) {
   )
 }
 
-const SIGNUP_ERRORS: Record<string, string> = {
-  invalidEmail: 'Enter a valid email address.',
-  invalidWorkspaceName: 'Enter a workspace name of at most 64 characters.',
-  invalidSlug: '3–32 characters: lowercase letters, digits and dashes.',
-  unsupportedLanguage: 'Pick a language from the list.',
-  slugTaken: 'That address is taken. Try another.',
-}
-
-export function Signup() {
-  const search = useSearch({ from: '/signup' })
-  const [form, setForm] = useState<SignupRequest>({
-    email: search.email ?? '',
-    workspaceName: search.workspaceName ?? '',
-    slug: search.slug ?? '',
-    language: search.language ?? 'english',
-  })
-  const [slugEdited, setSlugEdited] = useState(!!search.slug)
-  const signup = useMutation({ mutationFn: (body: SignupRequest) => api.post('/signup', body) })
-  const code = errorCode(signup.error)
-
-  if (signup.isSuccess)
-    return (
-      <Page>
-        <h1>Check your email</h1>
-        <p>
-          We sent a link to <strong>{form.email}</strong>. It is valid for 15 minutes.
-        </p>
-      </Page>
-    )
-
-  const submit = (e: FormEvent) => {
-    e.preventDefault()
-    signup.mutate(form)
-  }
-  const field = (k: keyof SignupRequest) => (v: string) => setForm((f) => ({ ...f, [k]: v }))
-
+// No public signup during the beta (spec 001): the operator creates workspaces.
+export function BetaNote() {
   return (
     <Page>
-      <h1>Start your free trial</h1>
-      <p className="muted">14 days, no card.</p>
-      <form onSubmit={submit} className="stack">
-        <label>
-          Your work email
-          <input type="email" required autoFocus value={form.email} onChange={(e) => field('email')(e.target.value)} />
-          {code === 'invalidEmail' && <span className="error">{SIGNUP_ERRORS[code]}</span>}
-        </label>
-        <label>
-          Workspace name
-          <input
-            required
-            maxLength={64}
-            value={form.workspaceName}
-            onChange={(e) =>
-              setForm((f) => ({ ...f, workspaceName: e.target.value, slug: slugEdited ? f.slug : slugify(e.target.value) }))
-            }
-          />
-          {code === 'invalidWorkspaceName' && <span className="error">{SIGNUP_ERRORS[code]}</span>}
-        </label>
-        <label>
-          Inbound address
-          <span className="input-suffix">
-            <input
-              required
-              value={form.slug}
-              pattern="[a-z0-9\-]{3,32}"
-              onChange={(e) => {
-                setSlugEdited(true)
-                field('slug')(e.target.value.toLowerCase())
-              }}
-            />
-            <span className="muted">@{INBOUND_DOMAIN}</span>
-          </span>
-          {(code === 'invalidSlug' || code === 'slugTaken') && <span className="error">{SIGNUP_ERRORS[code]}</span>}
-        </label>
-        <label>
-          Language of your support mail
-          <select value={form.language} onChange={(e) => field('language')(e.target.value)}>
-            {LANGUAGES.map((l) => (
-              <option key={l} value={l}>
-                {l[0].toUpperCase() + l.slice(1)}
-              </option>
-            ))}
-            <option value="simple">Other language (no stemming)</option>
-          </select>
-          <span className="hint">This decides how past cases are matched and cannot be changed later.</span>
-          {code === 'unsupportedLanguage' && <span className="error">{SIGNUP_ERRORS[code]}</span>}
-        </label>
-        <button className="primary" disabled={signup.isPending}>
-          Send me a link
-        </button>
-        {code && !SIGNUP_ERRORS[code] && <p className="error">Something went wrong. Try again.</p>}
-      </form>
+      <h1>Muninn is in private beta</h1>
+      <p>
+        We set up each workspace ourselves. Write to <a href={`mailto:${BETA_CONTACT}`}>{BETA_CONTACT}</a> to get one.
+      </p>
       <p className="muted">
         Already have an account? <Link to="/login">Log in</Link>
       </p>
@@ -138,19 +32,41 @@ export function Signup() {
   )
 }
 
-export function Login() {
-  const [email, setEmail] = useState('')
-  const login = useMutation({ mutationFn: () => api.post('/login', { email }) })
+function CodeInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <input
+      required
+      inputMode="numeric"
+      autoComplete="one-time-code"
+      pattern="[0-9]{6}"
+      maxLength={6}
+      placeholder="123456"
+      value={value}
+      onChange={(e) => onChange(e.target.value.replace(/\D/g, ''))}
+    />
+  )
+}
 
-  if (login.isSuccess)
-    return (
-      <Page>
-        <h1>Check your email</h1>
-        <p>
-          If <strong>{email}</strong> has an account, a login link is on its way. It is valid for 15 minutes.
-        </p>
-      </Page>
-    )
+const LOGIN_ERRORS: Record<string, string> = {
+  invalidCredentials: 'Email, password or code is wrong.',
+  tooManyAttempts: 'Too many attempts. Try again in 15 minutes.',
+}
+
+export function Login() {
+  const router = useRouter()
+  const qc = useQueryClient()
+  const [form, setForm] = useState({ email: '', password: '', code: '' })
+  const login = useMutation({
+    mutationFn: () => api.post<LoginResponse>('/login', form),
+    onSuccess: ({ redirect }) => {
+      qc.clear()
+      router.history.push(redirect)
+    },
+    // A wrong code is used up: clear it for the next one.
+    onError: () => setForm((f) => ({ ...f, code: '' })),
+  })
+  const code = errorCode(login.error)
+  const field = (k: keyof typeof form) => (v: string) => setForm((f) => ({ ...f, [k]: v }))
 
   return (
     <Page>
@@ -164,67 +80,112 @@ export function Login() {
       >
         <label>
           Email
-          <input type="email" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input type="email" required autoFocus autoComplete="username" value={form.email} onChange={(e) => field('email')(e.target.value)} />
         </label>
-        {errorCode(login.error) === 'invalidEmail' && <span className="error">Enter a valid email address.</span>}
+        <label>
+          Password
+          <input type="password" required autoComplete="current-password" value={form.password} onChange={(e) => field('password')(e.target.value)} />
+        </label>
+        <label>
+          Code from your authenticator app
+          <CodeInput value={form.code} onChange={field('code')} />
+        </label>
         <button className="primary" disabled={login.isPending}>
-          Send me a link
+          Log in
         </button>
+        {code && <span className="error">{LOGIN_ERRORS[code] ?? 'Something went wrong. Try again.'}</span>}
       </form>
       <p className="muted">
-        New to Muninn? <Link to="/signup">Start a free trial</Link>
+        <Link to="/forgot">Forgot password?</Link> · Lost your authenticator? Ask your workspace owner to reset your login.
       </p>
     </Page>
   )
 }
 
-// The link opens this page; only the button consumes the token, because
-// corporate link scanners fetch every URL in an email (ADR 0006).
+export function ForgotPassword() {
+  const [email, setEmail] = useState('')
+  const reset = useMutation({ mutationFn: () => api.post('/password-reset', { email }) })
+
+  if (reset.isSuccess)
+    return (
+      <Page>
+        <h1>Check your email</h1>
+        <p>
+          If <strong>{email}</strong> has an account, a link to choose a new password is on its way. It is valid for one
+          hour, and you will need your authenticator app.
+        </p>
+      </Page>
+    )
+
+  return (
+    <Page>
+      <h1>Forgot password</h1>
+      <form
+        className="stack"
+        onSubmit={(e) => {
+          e.preventDefault()
+          reset.mutate()
+        }}
+      >
+        <label>
+          Email
+          <input type="email" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} />
+        </label>
+        {errorCode(reset.error) === 'invalidEmail' && <span className="error">Enter a valid email address.</span>}
+        <button className="primary" disabled={reset.isPending}>
+          Send me a link
+        </button>
+      </form>
+      <p className="muted">
+        <Link to="/login">Back to log in</Link>
+      </p>
+    </Page>
+  )
+}
+
+const LINK_ERRORS: Record<string, string> = {
+  invalidPassword: 'Choose a password of 10 to 256 characters.',
+  tooManyAttempts: 'Too many attempts. Try again in 15 minutes.',
+}
+
+// A setup, invite or reset link opens this page. Reading it does not use the
+// link, because corporate link scanners fetch every URL in an email; only
+// submitting the form does (spec 001 §5).
 export function Auth() {
   const { token = '' } = useSearch({ from: '/auth' })
   const router = useRouter()
   const qc = useQueryClient()
+  const [password, setPassword] = useState('')
+  const [code, setCode] = useState('')
   const info = useQuery({
     queryKey: ['authLink', token],
     queryFn: () => api.get<AuthLinkInfo>(`/auth/link?token=${encodeURIComponent(token)}`),
     retry: false,
   })
-  const consume = useMutation({
-    mutationFn: () => api.post<ConsumeLinkResponse>('/auth/link', { token }),
+  const submit = useMutation({
+    mutationFn: () => api.post<LoginResponse>('/auth/link', { token, password, code }),
     onSuccess: ({ redirect }) => {
       qc.clear()
       router.history.push(redirect)
     },
+    onError: () => setCode(''),
   })
-  const code = errorCode(consume.error) ?? (info.error instanceof ApiError ? info.error.code : null)
+  const error = errorCode(submit.error) ?? (info.error instanceof ApiError ? info.error.code : null)
 
-  if (code === 'linkExpired' || (info.isError && !code))
+  if (error === 'linkExpired' || (info.isError && !error))
     return (
       <Page>
         <h1>This link has expired</h1>
-        <p>Links work once, for 15 minutes (invites for 7 days).</p>
+        <p>Links work once: for 7 days to set up a login, for one hour to reset a password.</p>
         <p>
-          <Link to="/login">Send a new login link</Link> · <Link to="/signup">Start a new signup</Link>
+          Ask your workspace owner for a new invite, or <Link to="/forgot">request a new password link</Link>.
         </p>
       </Page>
     )
   if (!info.data) return <Page>Loading…</Page>
 
-  const { purpose, workspaceName, email, slug, language } = info.data
-  if (code === 'slugTaken')
-    return (
-      <Page>
-        <h1>That address was just taken</h1>
-        <p>Someone else created {slug}@{INBOUND_DOMAIN} a moment ago.</p>
-        <Link
-          to="/signup"
-          search={{ email, workspaceName, slug: slug ?? undefined, language: language ?? undefined }}
-        >
-          Pick another address
-        </Link>
-      </Page>
-    )
-  if (code === 'emailTaken')
+  const { purpose, workspaceName, email, totp } = info.data
+  if (error === 'emailTaken')
     return (
       <Page>
         <h1>You already have an account</h1>
@@ -235,15 +196,65 @@ export function Auth() {
       </Page>
     )
 
-  const label = { signup: 'Create', login: 'Log in to', invite: 'Join' }[purpose]
+  const title = { invite: `Join ${workspaceName}`, setup: `Set up your login to ${workspaceName}`, reset: 'Choose a new password' }[purpose]
   return (
     <Page>
-      <h1>{workspaceName}</h1>
+      <h1>{title}</h1>
       <p className="muted">{email}</p>
-      <button className="primary" disabled={consume.isPending} onClick={() => consume.mutate()}>
-        {label} {workspaceName}
-      </button>
-      {consume.isError && code !== 'linkExpired' && <p className="error">Something went wrong. Try again.</p>}
+      <form
+        className="stack"
+        onSubmit={(e) => {
+          e.preventDefault()
+          submit.mutate()
+        }}
+      >
+        <label>
+          {purpose === 'reset' ? 'New password' : 'Choose a password'}
+          <input
+            type="password"
+            required
+            minLength={10}
+            maxLength={256}
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <span className="hint">At least 10 characters.</span>
+        </label>
+        {totp ? (
+          <div className="stack">
+            <div>
+              <strong>Set up your authenticator app</strong>
+              <p className="muted">
+                Scan this with Google Authenticator, Microsoft Authenticator, 1Password or any authenticator app. You will
+                enter a code from it every time you log in.
+              </p>
+            </div>
+            <img className="qr" src={`data:image/svg+xml;utf8,${encodeURIComponent(totp.qrSvg)}`} alt="QR code for your authenticator app" width={200} height={200} />
+            <p className="muted small">
+              Can't scan? Enter this key: <code className="break">{totp.secret}</code> <CopyButton text={totp.secret} />
+            </p>
+            <label>
+              The code your app shows now
+              <CodeInput value={code} onChange={setCode} />
+            </label>
+          </div>
+        ) : (
+          <label>
+            Code from your authenticator app
+            <CodeInput value={code} onChange={setCode} />
+          </label>
+        )}
+        <button className="primary" disabled={submit.isPending}>
+          {purpose === 'invite' ? `Join ${workspaceName}` : purpose === 'reset' ? 'Save and log in' : 'Set up and log in'}
+        </button>
+        {error === 'invalidCode' && (
+          <span className="error">
+            {totp ? 'That code does not match. Try the newest code your app shows.' : 'That is not the current code from your authenticator app.'}
+          </span>
+        )}
+        {error && error !== 'invalidCode' && <span className="error">{LINK_ERRORS[error] ?? 'Something went wrong. Try again.'}</span>}
+      </form>
     </Page>
   )
 }
@@ -294,12 +305,19 @@ export function ForwardingInstructions({ address }: { address: string }) {
 
 export function Onboarding() {
   const me = useMe()
+  const hubspot = useHubspot()
   if (!me.data) return null
   return (
     <div className="card narrow">
       <h1>Welcome to Muninn</h1>
       <p>Your workspace receives mail at:</p>
       <ForwardingInstructions address={me.data.workspace.inboundAddress} />
+      {hubspot.data && (
+        <p>
+          Answering in HubSpot Help Desk? <Link to="/settings/$section" params={{ section: 'hubspot' }}>Connect HubSpot</Link>{' '}
+          instead, and Muninn reads your tickets from there.
+        </p>
+      )}
       <Link className="button primary" to="/inbox/$view" params={{ view: 'unassigned' }}>
         Go to inbox
       </Link>

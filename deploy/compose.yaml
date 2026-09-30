@@ -1,6 +1,13 @@
 # Production: one Hetzner Cloud server in the EU (ADR 0008).
-#   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
+#   docker compose -f deploy/compose.yaml pull app     # the image CI built from main
+#   docker compose -f deploy/compose.yaml up -d
+# Roll back with MUNINN_TAG=<git sha> in deploy/.env; `up -d --build` builds on the box instead.
 name: muninn
+
+# Docker keeps container logs forever by default, until the disk is full.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: 10m, max-file: "5" }
 
 x-walg-env: &walg-env
   WALG_S3_PREFIX: ${WALG_S3_PREFIX}
@@ -13,8 +20,13 @@ x-walg-env: &walg-env
 
 services:
   app:
+    image: ghcr.io/thomasbarth04/muninn:${MUNINN_TAG:-latest}
     build: { context: .., dockerfile: Dockerfile }
     restart: unless-stopped
+    logging: *logging
+    # SIGTERM stops new work; running jobs finish (each external call times
+    # out at 30 s, the seats job makes two).
+    stop_grace_period: 1m
     # Listed, not env_file: the internet-facing process never sees the
     # superuser password or the backup bucket's keys.
     environment:
@@ -29,10 +41,13 @@ services:
       POSTMARK_TRIAL_STREAM: ${POSTMARK_TRIAL_STREAM}
       POSTMARK_INBOUND_USER: ${POSTMARK_INBOUND_USER}
       POSTMARK_INBOUND_PASSWORD: ${POSTMARK_INBOUND_PASSWORD}
+      JEV_API_URL: ${JEV_API_URL:-https://api.typesafe.ai}
       JEV_API_KEY: ${JEV_API_KEY}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
       STRIPE_PRICE_ID: ${STRIPE_PRICE_ID}
+      HUBSPOT_CLIENT_ID: ${HUBSPOT_CLIENT_ID}
+      HUBSPOT_CLIENT_SECRET: ${HUBSPOT_CLIENT_SECRET}
       DATABASE_URL: postgres://muninn_app:${MUNINN_APP_PASSWORD}@db:5432/muninn
       MIGRATE_DATABASE_URL: postgres://muninn_owner:${MUNINN_OWNER_PASSWORD}@db:5432/muninn
     depends_on:
@@ -42,6 +57,7 @@ services:
     build: postgres
     image: muninn-postgres
     restart: unless-stopped
+    logging: *logging
     shm_size: 256mb
     environment:
       <<: *walg-env
@@ -67,6 +83,7 @@ services:
   walg:
     image: muninn-postgres
     restart: unless-stopped
+    logging: *logging
     user: postgres
     environment:
       <<: *walg-env
@@ -79,6 +96,8 @@ services:
       - |
         while true; do
           if wal-g backup-push "$$PGDATA" && wal-g delete retain FULL 14 --confirm; then
+            # /healthz reads this. The table exists once the app has migrated.
+            until psql -d muninn -qc 'INSERT INTO base_backups DEFAULT VALUES'; do sleep 60; done
             sleep 86400
           else
             echo "base backup failed, retrying in 10 minutes" >&2
@@ -93,6 +112,7 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
+    logging: *logging
     environment:
       DOMAIN: ${DOMAIN}
     ports: ["80:80", "443:443", "443:443/udp"]

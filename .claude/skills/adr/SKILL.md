@@ -1,5 +1,6 @@
 ---
-description: Record an architecture decision
+description: Record an architecture decision in docs/adr/. Use for a decision that is expensive to reverse (datastore, auth, tenancy, deploy target, a new model vendor, a change to a contract's shape), not for library picks.
+argument-hint: <decision title>
 ---
 
 Record an ADR for: $ARGUMENTS
