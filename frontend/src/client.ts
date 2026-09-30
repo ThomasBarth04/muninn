@@ -11,6 +11,7 @@ import type { SnippetsResponse } from './api/types/SnippetsResponse'
 import type { Ticket } from './api/types/Ticket'
 import type { ViewFilters } from './api/types/ViewFilters'
 import type { ViewsResponse } from './api/types/ViewsResponse'
+import type { HubspotStatus } from './api/types/HubspotStatus'
 
 export class ApiError extends Error {
   status: number
@@ -183,6 +184,18 @@ export const initials = (name: string) =>
     .slice(0, 2)
     .map((w) => w[0]!.toUpperCase())
     .join('')
+// Spec 007: null when the server has no HubSpot app (404), so callers hide
+// HubSpot altogether. Polls while an import runs.
+export const useHubspot = () =>
+  useQuery({
+    queryKey: ['hubspot'],
+    queryFn: () =>
+      api.get<HubspotStatus>('/integrations/hubspot').catch((e) => {
+        if (e instanceof ApiError && e.status === 404) return null
+        throw e
+      }),
+    refetchInterval: (q) => (q.state.data?.connection?.status === 'importing' ? 3000 : false),
+  })
 
 export const STATUS_LABELS: Record<Ticket['status'], string> = {
   new: 'New',

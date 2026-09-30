@@ -4,7 +4,7 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useRouter, useSearch } from '@tanstack/react-router'
-import { ApiError, BETA_CONTACT, api, errorCode, useMe } from './client'
+import { ApiError, BETA_CONTACT, api, errorCode, useHubspot, useMe } from './client'
 import type { AuthLinkInfo } from './api/types/AuthLinkInfo'
 import type { LoginResponse } from './api/types/LoginResponse'
 
@@ -305,12 +305,19 @@ export function ForwardingInstructions({ address }: { address: string }) {
 
 export function Onboarding() {
   const me = useMe()
+  const hubspot = useHubspot()
   if (!me.data) return null
   return (
     <div className="card narrow">
       <h1>Welcome to Muninn</h1>
       <p>Your workspace receives mail at:</p>
       <ForwardingInstructions address={me.data.workspace.inboundAddress} />
+      {hubspot.data && (
+        <p>
+          Answering in HubSpot Help Desk? <Link to="/settings/$section" params={{ section: 'hubspot' }}>Connect HubSpot</Link>{' '}
+          instead, and Muninn reads your tickets from there.
+        </p>
+      )}
       <Link className="button primary" to="/inbox/$view" params={{ view: 'unassigned' }}>
         Go to inbox
       </Link>

@@ -4,6 +4,7 @@ import type { CategorySuggestion } from "./CategorySuggestion";
 import type { Contact } from "./Contact";
 import type { ContactTicket } from "./ContactTicket";
 import type { Draft } from "./Draft";
+import type { HubspotLink } from "./HubspotLink";
 import type { LastMessage } from "./LastMessage";
 import type { Message } from "./Message";
 import type { TicketCategory } from "./TicketCategory";
@@ -34,4 +35,8 @@ unread: boolean,
  * In `new` and `waitingOnUs`: the first customer message after the last
  * agent reply, or when the status was set if earlier. Else null (spec 006 §16).
  */
-waitingSince: string | null, snoozedUntil: string | null, snoozeEnded: boolean, viewers: Array<Viewer>, };
+waitingSince: string | null, snoozedUntil: string | null, snoozeEnded: boolean, viewers: Array<Viewer>, 
+/**
+ * Null for a ticket that did not come from HubSpot (spec 007).
+ */
+hubspot: HubspotLink | null, };

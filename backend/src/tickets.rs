@@ -115,7 +115,8 @@ fn ticket_json() -> String {
                    ORDER BY va.name)
         FROM ticket_reads v JOIN agents va ON va.workspace_id = v.workspace_id AND va.id = v.agent_id
         WHERE v.workspace_id = t.workspace_id AND v.ticket_id = t.id AND v.agent_id <> p.me
-          AND v.viewed_at > now() - interval '30 seconds'), '[]'::json))"#
+          AND v.viewed_at > now() - interval '30 seconds'), '[]'::json),
+    'hubspot', CASE WHEN t.hubspot_id IS NOT NULL THEN json_build_object('url', t.hubspot_url) END)"#
     )
 }
 
@@ -770,14 +771,18 @@ async fn apply(tx: &mut Tx, ws: Uuid, id: Uuid, req: &PatchTicket) -> ApiResult<
     {
         return Err(ApiError::bad_request("invalidSnooze"));
     }
-    let current: String = sqlx::query_scalar(
-        "SELECT status FROM tickets WHERE workspace_id = $1 AND id = $2 FOR UPDATE",
+    let (current, hubspot): (String, bool) = sqlx::query_as(
+        "SELECT status, hubspot_id IS NOT NULL FROM tickets WHERE workspace_id = $1 AND id = $2 FOR UPDATE",
     )
     .bind(ws)
     .bind(id)
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(ApiError::not_found)?;
+    // Spec 007 §25–26: HubSpot owns these; category and snooze are Muninn's own.
+    if hubspot && (req.status.is_some() || req.owner_id.is_some() || req.priority.is_some()) {
+        return Err(synced_from_hubspot());
+    }
     let closed = req.status.as_deref().unwrap_or(&current) == "closed";
     if closed && matches!(req.snoozed_until, Some(Some(_))) {
         return Err(ApiError::conflict("ticketClosed"));
@@ -951,6 +956,23 @@ async fn delivery_for_send(
     })
 }
 
+/// Whether the ticket came from HubSpot (spec 007); `404` if there is none.
+async fn from_hubspot(tx: &mut Tx, ws: Uuid, id: Uuid) -> ApiResult<bool> {
+    sqlx::query_scalar(
+        "SELECT hubspot_id IS NOT NULL FROM tickets WHERE workspace_id = $1 AND id = $2",
+    )
+    .bind(ws)
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(ApiError::not_found)
+}
+
+/// Spec 007 §25: a HubSpot ticket is answered in HubSpot.
+fn synced_from_hubspot() -> ApiError {
+    ApiError::conflict("syncedFromHubSpot")
+}
+
 fn nonempty(text: &str) -> ApiResult<&str> {
     let text = text.trim();
     if text.is_empty() {
@@ -976,6 +998,9 @@ async fn reply(
     }
     let (ws, me) = (auth.workspace_id, auth.agent_id);
     let mut tx = tenant_tx(&st.db, ws).await?;
+    if from_hubspot(&mut tx, ws, id).await? {
+        return Err(synced_from_hubspot());
+    }
     let found = sqlx::query(
         "UPDATE tickets SET last_activity_at = now(), owner_id = coalesce(owner_id, $3)
          WHERE workspace_id = $1 AND id = $2",
@@ -1141,6 +1166,9 @@ async fn comment(
     let text = nonempty(&req.text)?;
     let (ws, me) = (auth.workspace_id, auth.agent_id);
     let mut tx = tenant_tx(&st.db, ws).await?;
+    if from_hubspot(&mut tx, ws, id).await? {
+        return Err(synced_from_hubspot());
+    }
     let found = sqlx::query(
         "UPDATE tickets SET last_activity_at = now() WHERE workspace_id = $1 AND id = $2",
     )

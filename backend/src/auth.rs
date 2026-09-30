@@ -450,7 +450,7 @@ pub async fn insert_agent(
 ) -> Result<Uuid, sqlx::Error> {
     // The display name until they change it (§13).
     let name = email.split('@').next().unwrap_or(email);
-    sqlx::query_scalar(
+    let id: Uuid = sqlx::query_scalar(
         "INSERT INTO agents (workspace_id, email, name, role) VALUES ($1, $2, $3, $4) RETURNING id",
     )
     .bind(ws)
@@ -458,7 +458,17 @@ pub async fn insert_agent(
     .bind(name)
     .bind(role)
     .fetch_one(&mut **tx)
-    .await
+    .await?;
+    // Spec 007 §12: they own their HubSpot tickets from the moment they join.
+    sqlx::query(
+        "UPDATE tickets SET owner_id = $3 WHERE workspace_id = $1 AND hubspot_owner_email = $2 AND owner_id IS NULL",
+    )
+    .bind(ws)
+    .bind(email)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(id)
 }
 
 /// §10: both factors cleared, sessions and pending links gone, a new setup

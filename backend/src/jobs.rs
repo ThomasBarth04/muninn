@@ -67,12 +67,40 @@ pub async fn enqueue_at(
     Ok(())
 }
 
+/// A job about a HubSpot object (spec 007), due in `delay_secs`. One for the
+/// same object that has not started yet absorbs it (§18).
+pub async fn enqueue_object(
+    tx: &mut Transaction<'static, Postgres>,
+    workspace_id: Uuid,
+    kind: &str,
+    subject_id: Option<Uuid>,
+    object_ref: &str,
+    delay_secs: f64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO jobs (workspace_id, kind, subject_id, object_ref, run_at)
+         VALUES ($1, $2, $3, $4, now() + $5 * interval '1 second')
+         ON CONFLICT (workspace_id, kind, object_ref)
+             WHERE object_ref IS NOT NULL AND attempts = 0 AND failed_at IS NULL
+         DO NOTHING",
+    )
+    .bind(workspace_id)
+    .bind(kind)
+    .bind(subject_id)
+    .bind(object_ref)
+    .bind(delay_secs)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 #[derive(sqlx::FromRow, Debug, Clone)]
 pub struct Job {
     pub id: i64,
     pub workspace_id: Uuid,
     pub kind: String,
     pub subject_id: Option<Uuid>,
+    pub object_ref: Option<String>,
     pub attempts: i32,
 }
 
@@ -82,7 +110,7 @@ async fn claim(st: &AppState) -> Result<Option<Job>, sqlx::Error> {
         "UPDATE jobs SET run_at = now() + interval '5 minutes', attempts = attempts + 1
          WHERE id = (SELECT id FROM jobs WHERE failed_at IS NULL AND run_at <= now()
                      ORDER BY run_at LIMIT 1 FOR UPDATE SKIP LOCKED)
-         RETURNING id, workspace_id, kind, subject_id, attempts",
+         RETURNING id, workspace_id, kind, subject_id, object_ref, attempts",
     )
     .fetch_optional(&st.db)
     .await
@@ -92,12 +120,21 @@ async fn dispatch(st: &AppState, job: &Job) -> JobResult {
     let ws = job.workspace_id;
     let id = job.subject_id;
     let subject = || id.ok_or_else(|| JobError::Fail("job without subject".into()));
+    let object = || {
+        job.object_ref
+            .as_deref()
+            .ok_or_else(|| JobError::Fail("job without object".into()))
+    };
     match job.kind.as_str() {
         "suggest" => crate::copilot::suggest_job(st, ws, subject()?).await,
         "categorize" => crate::categories::categorize_job(st, ws, subject()?).await,
         "send" => crate::mail::send_job(st, ws, subject()?).await,
         "wake" => crate::tickets::wake_job(st, ws, subject()?).await,
         "seats" => crate::billing::seats_job(st, ws).await,
+        "hubspotImport" => crate::hubspot::import_job(st, ws, subject()?, object()?).await,
+        "hubspotCheck" => crate::hubspot::check_job(st, ws, subject()?).await,
+        "hubspotTicket" => crate::hubspot::ticket_job(st, ws, object()?).await,
+        "hubspotThread" => crate::hubspot::thread_job(st, ws, object()?).await,
         other => Err(JobError::Fail(format!("unknown job kind {other}"))),
     }
 }

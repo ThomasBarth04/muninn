@@ -1061,6 +1061,7 @@ function Row({
           <span className={`pill status-${t.status}`}>{STATUS_LABELS[t.status]}</span>
           {t.priority && <span className={`pill priority-${t.priority}`}>{PRIORITY_LABELS[t.priority]}</span>}
           {t.category && <span className="pill">{t.category.name}</span>}
+          {t.hubspot && <span className="pill">HubSpot</span>}
           <Waiting t={t} />
           {t.snoozedUntil && <span className="pill snoozed">Until {formatSnooze(t.snoozedUntil)}</span>}
           {t.snoozeEnded && <span className="pill snoozed">Snooze ended</span>}
@@ -1070,8 +1071,8 @@ function Row({
         </div>
       </Link>
       <div className="row-actions">
-        {t.owner?.id !== meId && meId && <button onClick={() => change([t], { ownerId: meId })}>Assign to me</button>}
-        {t.status !== 'closed' && <button onClick={() => change([t], { status: 'closed' })}>Close</button>}
+        {!t.hubspot && t.owner?.id !== meId && meId && <button onClick={() => change([t], { ownerId: meId })}>Assign to me</button>}
+        {!t.hubspot && t.status !== 'closed' && <button onClick={() => change([t], { status: 'closed' })}>Close</button>}
         {t.status !== 'closed' && (
           <Dropdown label="Snooze">{(close) => <ActionMenu kind="snooze" tickets={[t]} onClose={close} onDone={close} />}</Dropdown>
         )}

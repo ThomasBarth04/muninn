@@ -72,7 +72,12 @@ export function TicketPane() {
       <section className="thread" aria-label="Conversation">
         <Header t={t} from={from} view={view} />
         <Thread key={t.id} t={t} />
-        <Composer key={t.id} t={t} />
+        {/* Spec 007 §25: a HubSpot ticket is answered in HubSpot. */}
+        {t.hubspot ? (
+          <p className="composer muted">Synced from HubSpot. Reply there, and change its status, owner and priority there.</p>
+        ) : (
+          <Composer key={t.id} t={t} />
+        )}
       </section>
       <Sidebar t={t} view={view} />
     </>
@@ -101,6 +106,14 @@ function Header({ t, from, view }: { t: TicketDetail; from?: string; view: strin
       <span className="number">#{t.number}</span>
       <h1>{t.subject}</h1>
       <span className={`pill status-${t.status}`}>{STATUS_LABELS[t.status]}</span>
+      {t.hubspot && (
+        <>
+          <span className="pill">HubSpot</span>
+          <a href={t.hubspot.url} target="_blank" rel="noopener noreferrer">
+            Open in HubSpot
+          </a>
+        </>
+      )}
       {t.viewers.length > 0 && (
         <span className="viewers">
           {t.viewers.map((v) => (
@@ -111,7 +124,7 @@ function Header({ t, from, view }: { t: TicketDetail; from?: string; view: strin
           </span>
         </span>
       )}
-      {meId && t.owner?.id !== meId && <button onClick={() => change([t], { ownerId: meId })}>Assign to me</button>}
+      {meId && !t.hubspot && t.owner?.id !== meId && <button onClick={() => change([t], { ownerId: meId })}>Assign to me</button>}
       <span className="nav-arrows">
         <button aria-label="Previous ticket (k)" disabled={!prev} onClick={() => prev && inbox.open(prev)}>
           ↑
@@ -565,6 +578,8 @@ function Sidebar({ t, view }: { t: TicketDetail; view: string }) {
   const inbox = useInbox()
   // An archived category is not offered, but a ticket that has it keeps showing it (spec 004 §3).
   const options = (categories.data?.categories ?? []).filter((c) => !c.archived || c.id === t.category?.id)
+  // Spec 007 §25–26: HubSpot owns these; the category stays Muninn's own.
+  const fromHubspot = t.hubspot !== null
 
   return (
     <aside className="sidebar" aria-label="Ticket details">
@@ -572,7 +587,7 @@ function Sidebar({ t, view }: { t: TicketDetail; view: string }) {
         <h2>Ticket</h2>
         <label>
           Status
-          <select value={t.status} onChange={(e) => change([t], { status: e.target.value as Ticket['status'] })}>
+          <select value={t.status} disabled={fromHubspot} onChange={(e) => change([t], { status: e.target.value as Ticket['status'] })}>
             {Object.entries(STATUS_LABELS).map(([k, v]) => (
               <option key={k} value={k}>
                 {v}
@@ -582,7 +597,7 @@ function Sidebar({ t, view }: { t: TicketDetail; view: string }) {
         </label>
         <label>
           Owner
-          <select value={t.owner?.id ?? ''} onChange={(e) => change([t], { ownerId: e.target.value || null })}>
+          <select value={t.owner?.id ?? ''} disabled={fromHubspot} onChange={(e) => change([t], { ownerId: e.target.value || null })}>
             <option value="">Unassigned</option>
             {agents.data?.agents.map((a) => (
               <option key={a.id} value={a.id}>
@@ -594,7 +609,7 @@ function Sidebar({ t, view }: { t: TicketDetail; view: string }) {
         </label>
         <label>
           Priority
-          <select value={t.priority ?? ''} onChange={(e) => change([t], { priority: (e.target.value || null) as Ticket['priority'] })}>
+          <select value={t.priority ?? ''} disabled={fromHubspot} onChange={(e) => change([t], { priority: (e.target.value || null) as Ticket['priority'] })}>
             <option value="">None</option>
             {Object.entries(PRIORITY_LABELS).map(([k, v]) => (
               <option key={k} value={k}>
@@ -614,6 +629,7 @@ function Sidebar({ t, view }: { t: TicketDetail; view: string }) {
             ))}
           </select>
         </label>
+        {fromHubspot && <p className="hint">Status, owner and priority come from HubSpot.</p>}
         {t.category?.source === 'jev' && t.category.probability !== null && <p className="hint">Set by Jev · {pct(t.category.probability)}</p>}
         {!t.category && t.categorySuggestions.length > 0 && (
           <p className="chips">
