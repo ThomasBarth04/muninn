@@ -113,6 +113,7 @@ const CHANGE_ERRORS: Record<string, string> = {
   unknownCategory: 'That category is archived or gone.',
   notFound: 'One of the tickets no longer exists.',
   invalidBatch: 'At most 200 tickets at a time.',
+  syncedFromHubSpot: 'HubSpot owns the status, owner and priority of its tickets. Change them there.',
 }
 export const changeError = (code: string | null) =>
   `Could not save. ${(code && CHANGE_ERRORS[code]) || 'Try again.'}`
@@ -172,10 +173,8 @@ async function save(qc: QueryClient, items: Item[]): Promise<string | null> {
 
 function previous(t: Ticket, p: PatchTicket): Item {
   const item: Item = { id: t.id }
-  if (p.status !== undefined || p.snoozedUntil !== undefined) {
-    item.status = t.status
-    item.snoozedUntil = t.snoozedUntil
-  }
+  if (p.status !== undefined) item.status = t.status
+  if (p.status !== undefined || p.snoozedUntil !== undefined) item.snoozedUntil = t.snoozedUntil
   if (p.ownerId !== undefined) item.ownerId = t.owner?.id ?? null
   if (p.priority !== undefined) item.priority = t.priority
   if (p.categoryId !== undefined) item.categoryId = t.category?.id ?? null

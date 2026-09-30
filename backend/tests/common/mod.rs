@@ -1,7 +1,7 @@
 //! Test harness: a fresh database per test, migrated as the owner role and
 //! used as the app role exactly as in production (ADR 0003), the real router
-//! on a random port, and one mock server standing in for Postmark, Jev and
-//! Stripe.
+//! on a random port, and one mock server standing in for Postmark, Jev,
+//! Stripe and HubSpot.
 //!
 //! Needs `TEST_DATABASE_URL`, a superuser URL, e.g.
 //! `postgres://postgres:postgres@localhost:55432/postgres`
@@ -21,6 +21,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 pub const INBOUND_PASSWORD: &str = "inbound-secret";
 pub const STRIPE_WEBHOOK_SECRET: &str = "whsec_test";
+pub const HUBSPOT_CLIENT_SECRET: &str = "hs-secret";
 
 /// One request the app made to an external service.
 #[derive(Clone, Debug)]
@@ -85,7 +86,11 @@ async fn mock_handler(
     body: String,
 ) -> (StatusCode, axum::Json<Value>) {
     let body = serde_json::from_str(&body).unwrap_or(Value::String(body));
-    let path = uri.path().to_string();
+    // With the query: HubSpot's API says what it wants there.
+    let path = uri
+        .path_and_query()
+        .map_or(uri.path(), |p| p.as_str())
+        .to_string();
     mock.calls.lock().unwrap().push(Call {
         method: method.to_string(),
         path: path.clone(),
@@ -198,10 +203,14 @@ pub async fn spawn() -> Option<TestApp> {
         postmark_inbound_password: INBOUND_PASSWORD.into(),
         jev_api_url: mock_url.clone(),
         jev_api_key: Some("jev-key".into()),
-        stripe_api_url: mock_url,
+        stripe_api_url: mock_url.clone(),
         stripe_secret_key: Some("sk_test".into()),
         stripe_webhook_secret: Some(STRIPE_WEBHOOK_SECRET.into()),
         stripe_price_id: Some("price_seat".into()),
+        hubspot_api_url: mock_url.clone(),
+        hubspot_app_url: "https://app.hubspot.test".into(),
+        hubspot_client_id: Some("hs-client".into()),
+        hubspot_client_secret: Some(HUBSPOT_CLIENT_SECRET.into()),
     };
     let st = AppState::new(db, cfg);
     let app = muninn::router(st.clone());
@@ -220,7 +229,11 @@ impl TestApp {
         Client {
             base: self.url.clone(),
             cookie: None,
-            http: reqwest::Client::new(),
+            // Redirects are answers to look at (the HubSpot callback), not to follow.
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
         }
     }
 
